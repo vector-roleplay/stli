@@ -1,0 +1,12 @@
+{
+  "display_name": "酒馆联机",
+  "loading_order": 100,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "Your Name",
+  "version": "1.0.0",
+  "homePage": "https://github.com/yourname/tavern-multiplayer",
+  "auto_update": true
+}
