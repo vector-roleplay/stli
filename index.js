@@ -1496,13 +1496,13 @@ function setupEventListeners() {
   eventSource.on(event_types.GENERATION_ENDED, function(messageCount) {
     if (!currentRoom) return;
     
-    // 清空远程世界书缓存
-    clearRemoteWorldInfoCache();
-    
     // 清除注入的 extensionPrompt
     clearInjectedExtensionPrompt();
     
     if (!turnState.isMyTurn || !isGenerating) return;
+    
+    // 只有真正完成自己的生成后才清空缓存
+    clearRemoteWorldInfoCache();
     
     log('事件: 生成结束');
     isGenerating = false;
@@ -1521,7 +1521,7 @@ function setupEventListeners() {
     });
     
     sendWS({ type: 'aiGenerationEnded' });
-  });
+});
   
   // ===== 6. 生成停止 =====
   eventSource.on(event_types.GENERATION_STOPPED, function() {
