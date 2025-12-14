@@ -6,7 +6,7 @@
   "js": "index.js",
   "css": "style.css",
   "author": "Your Name",
-  "version": "1.0.8",
+  "version": "1.1.0",
   "homePage": "https://github.com/yourname/tavern-multiplayer",
   "auto_update": true
 }
