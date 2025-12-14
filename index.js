@@ -675,6 +675,29 @@ function injectRemoteWorldInfoViaExtensionPrompt() {
   }
 }
 
+// ========== 备用注入方案（直接写入 extensionPrompts 对象）==========
+function tryAlternativeInjection(content) {
+  try {
+    const ctx = getContext();
+    if (ctx.extensionPrompts) {
+      ctx.extensionPrompts[INJECTION_KEY] = {
+        value: content,
+        position: EXTENSION_PROMPT_TYPES.IN_PROMPT,
+        depth: 0,
+        scan: true,
+        role: EXTENSION_PROMPT_ROLES.SYSTEM
+      };
+      log('备用方案成功：直接写入 extensionPrompts');
+      return true;
+    }
+  } catch(e) {
+    log('备用方案失败: ' + e);
+  }
+  
+  log('所有注入方案都失败了');
+  return false;
+}
+
 // ========== 清除注入（最终修复版）==========
 function clearInjectedExtensionPrompt() {
   try {
