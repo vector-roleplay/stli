@@ -578,35 +578,69 @@ function clearRemoteWorldInfoCache() {
   log('已清空远程世界书缓存');
 }
 
-// ========== 注入远程世界书到数据包 ==========
-function injectRemoteWorldInfo(data) {
-  const merged = mergeRemoteWorldInfo();
-  if (!merged) return false;
+// ========== 使用 extensionPrompt 注入远程世界书（新方法）==========
+const INJECTION_KEY = 'multiplayer_remote_worldinfo';
+
+function injectRemoteWorldInfoViaExtensionPrompt() {
+  if (remoteWorldInfoCache.size === 0) return;
   
-  if (!data.chat || !Array.isArray(data.chat)) {
-    log('无法注入：data.chat 无效');
-    return false;
-  }
+  // 构建注入内容
+  const playerNames = [];
+  const contents = [];
   
-  // 在开头插入联机模板
-  data.chat.unshift({
-    role: 'system',
-    content: merged.template
-  });
-  
-  // 插入各玩家的世界书内容
-  merged.contents.forEach(item => {
-    const typeLabel = item.type === 'worldInfo' ? '世界设定' : 
-                      item.type === 'character' ? '角色信息' : '消息';
+  remoteWorldInfoCache.forEach(function(data, odId) {
+    playerNames.push(data.userName);
     
-    data.chat.push({
-      role: item.role || 'system',
-      content: `[来自玩家 ${item.from} 的${typeLabel}]\n${item.content}`
-    });
+    if (data.syncContent && Array.isArray(data.syncContent)) {
+      data.syncContent.forEach(function(item) {
+        if (item.type === 'worldInfo' || item.type === 'character') {
+          contents.push('[来自玩家 ' + data.userName + ' 的' + (item.type === 'worldInfo' ? '世界设定' : '角色信息') + ']\n' + item.content);
+        }
+      });
+    }
   });
   
-  log('已注入远程世界书到数据包');
-  return true;
+  if (contents.length === 0) return;
+  
+  // 生成联机模板
+  const template = '[联机模式]\n当前有多位玩家参与创作：\n' + 
+    playerNames.map(function(name) { return '- 玩家"' + name + '"的世界设定已附加在下方'; }).join('\n') + 
+    '\n请融合各方设定进行创作。';
+  
+  const fullContent = template + '\n\n' + contents.join('\n\n');
+  
+  // 使用酒馆官方 API 注入
+  try {
+    const setExtensionPrompt = window.setExtensionPrompt;
+    const extension_prompt_types = window.extension_prompt_types;
+    
+    if (typeof setExtensionPrompt === 'function' && extension_prompt_types) {
+      setExtensionPrompt(
+        INJECTION_KEY,
+        fullContent,
+        extension_prompt_types.IN_PROMPT,
+        0,
+        true
+      );
+      log('已通过 extensionPrompt 注入远程世界书: ' + contents.length + ' 条');
+    } else {
+      log('setExtensionPrompt 不可用');
+    }
+  } catch(e) {
+    log('注入失败: ' + e);
+  }
+}
+
+// ========== 清除注入的 extensionPrompt ==========
+function clearInjectedExtensionPrompt() {
+  try {
+    const setExtensionPrompt = window.setExtensionPrompt;
+    const extension_prompt_types = window.extension_prompt_types;
+    
+    if (typeof setExtensionPrompt === 'function' && extension_prompt_types) {
+      setExtensionPrompt(INJECTION_KEY, '', extension_prompt_types.IN_PROMPT, 0, false);
+    }
+  } catch(e) {}
 }
 
 // ========== 调试函数 ==========
@@ -1367,9 +1401,24 @@ function handleMessage(msg) {
   }
 }
 
-// ========== 事件监听设置（核心同步逻辑）==========
+// ========== 事件监听设置（新版本 - 使用 extensionPrompt）==========
 function setupEventListeners() {
-  // 1. 用户消息发送后 - 准备提取数据
+  
+  // ===== 1. 生成开始 - 注入远程世界书（最早时机！）=====
+  eventSource.on(event_types.GENERATION_STARTED, function(type, options, dryRun) {
+    if (dryRun) return;
+    if (!currentRoom) return;
+    
+    log('事件: 生成开始');
+    isGenerating = true;
+    
+    // 如果有缓存的远程世界书，立即注入
+    if (remoteWorldInfoCache.size > 0) {
+      injectRemoteWorldInfoViaExtensionPrompt();
+    }
+  });
+  
+  // ===== 2. 用户消息发送后 - 准备提取数据 =====
   eventSource.on(event_types.MESSAGE_SENT, async function(messageId) {
     if (!currentRoom || !turnState.isMyTurn) return;
     
@@ -1387,7 +1436,7 @@ function setupEventListeners() {
     log('对照组已准备: 世界书 ' + pendingWorldInfoEntries.length + ' 条');
   });
   
-  // 2. 数据包准备完成 - 提取并发送同步内容
+  // ===== 3. 数据包准备完成 - 提取并发送 =====
   eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, function(data) {
     if (data.dryRun) return;
     if (!currentRoom || !turnState.isMyTurn) return;
@@ -1412,7 +1461,6 @@ function setupEventListeners() {
       timestamp: Date.now()
     });
     
-    // 通知服务器用户消息已发送
     sendWS({ type: 'userMessageSent' });
     
     log('已发送同步数据: ' + syncContent.length + ' 条内容');
@@ -1422,19 +1470,7 @@ function setupEventListeners() {
     pendingCharInfo = null;
   });
   
-  // 3. 生成前 - 注入远程世界书
-  eventSource.on(event_types.GENERATE_BEFORE_COMBINE_PROMPTS, function(data) {
-    if (data.dryRun) return;
-    if (!currentRoom) return;
-    
-    // 注入其他玩家的世界书
-    if (remoteWorldInfoCache.size > 0) {
-      log('事件: 注入远程世界书');
-      injectRemoteWorldInfo(data);
-    }
-  });
-  
-  // 4. 流式token接收（节流）
+  // ===== 4. 流式token（节流）=====
   const throttledStreamSync = throttle(function(text) {
     if (!currentRoom || !turnState.isMyTurn || !isGenerating) return;
     
@@ -1456,20 +1492,15 @@ function setupEventListeners() {
     throttledStreamSync(text);
   });
   
-  // 5. 生成开始
-  eventSource.on(event_types.GENERATION_STARTED, function(type, options, dryRun) {
-    if (dryRun) return;
-    if (!currentRoom || !turnState.isMyTurn) return;
-    log('事件: 生成开始');
-    isGenerating = true;
-  });
-  
-  // 6. 生成结束
+  // ===== 5. 生成结束 - 清理 =====
   eventSource.on(event_types.GENERATION_ENDED, function(messageCount) {
     if (!currentRoom) return;
     
     // 清空远程世界书缓存
     clearRemoteWorldInfoCache();
+    
+    // 清除注入的 extensionPrompt
+    clearInjectedExtensionPrompt();
     
     if (!turnState.isMyTurn || !isGenerating) return;
     
@@ -1492,13 +1523,14 @@ function setupEventListeners() {
     sendWS({ type: 'aiGenerationEnded' });
   });
   
-  // 7. 生成停止
+  // ===== 6. 生成停止 =====
   eventSource.on(event_types.GENERATION_STOPPED, function() {
     log('事件: 生成停止');
     isGenerating = false;
+    clearInjectedExtensionPrompt();
   });
   
-  // 8. 聊天切换时清理
+  // ===== 7. 聊天切换时清理 =====
   eventSource.on(event_types.CHAT_CHANGED, function() {
     log('事件: 聊天切换');
     remoteStreamMap.clear();
@@ -1506,6 +1538,7 @@ function setupEventListeners() {
     isGenerating = false;
     pendingWorldInfoEntries = null;
     pendingCharInfo = null;
+    clearInjectedExtensionPrompt();
   });
   
   log('事件监听已设置');
