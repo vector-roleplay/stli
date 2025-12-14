@@ -1,11 +1,54 @@
 // ========================================
-// 酒馆联机扩展 v1.3.0
+// 酒馆联机扩展 v1.3.1
 // 服务器: wss://chu.zeabur.app
 // 修复: 正则同步功能（完整字段+隔离处理）
 // ========================================
 
-import { eventSource, event_types, saveSettingsDebounced } from '../../../../script.js';
-import { extension_settings, getContext } from '../../../extensions.js';
+// ========================================
+// 正则引擎兼容层（手机端修复）
+// ========================================
+let _regexEngine = null;
+let _regexEngineReady = false;
+
+const regex_placement = { 
+  MD_DISPLAY: 0,
+  USER_INPUT: 1,
+  AI_OUTPUT: 2,
+  SLASH_COMMAND: 3,
+  WORLD_INFO: 5,
+  REASONING: 6
+};
+
+async function initRegexEngine() {
+  try {
+    _regexEngine = await import('../../regex/engine.js');
+    _regexEngineReady = true;
+    console.log('[酒馆联机] 正则引擎加载成功');
+    return true;
+  } catch(e) {
+    console.log('[酒馆联机] 正则引擎加载失败: ' + e.message);
+    _regexEngineReady = false;
+    return false;
+  }
+}
+
+function getRegexScripts(options) {
+  if (_regexEngineReady && _regexEngine && _regexEngine.getRegexScripts) {
+    try {
+      return _regexEngine.getRegexScripts(options);
+    } catch(e) {}
+  }
+  return extension_settings?.regex || [];
+}
+
+function runRegexScript(script, text, options) {
+  if (_regexEngineReady && _regexEngine && _regexEngine.runRegexScript) {
+    try {
+      return _regexEngine.runRegexScript(script, text, options);
+    } catch(e) {}
+  }
+  return executeRegexFallback(script, text);
+}
 
 // ⭐ 导入正则引擎（官方API）
 import { 
@@ -2708,9 +2751,12 @@ function loadSettings() {
   }
 }
 
+
 jQuery(async () => {
-  log('扩展加载中... v1.3.0');
+  log('扩展加载中... v1.3.1');
   
+  // 先加载正则引擎
+  await initRegexEngine();  
   loadSettings();
   
   waitForUserName(function() {
@@ -2774,4 +2820,5 @@ log('  - mpDebug.state() 查看联机状态');
 log('  - mpDebug.regex() 查看正则信息');
 log('  - mpDebug.cache() 查看缓存内容');
 log('  - mpDebug.testRemoteRegex(text, senderId) 测试远程正则');
+
 log('  - mpDebug.testLocalRegex(text) 测试本地正则');
