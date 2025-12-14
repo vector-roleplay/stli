@@ -50,12 +50,6 @@ function runRegexScript(script, text, options) {
   return executeRegexFallback(script, text);
 }
 
-// ⭐ 导入正则引擎（官方API）
-import { 
-    getRegexScripts, 
-    runRegexScript, 
-    regex_placement 
-} from '../../regex/engine.js';
 
 // ========== 扩展配置 ==========
 const extensionName = 'tavern-multiplayer';
@@ -2757,6 +2751,7 @@ jQuery(async () => {
   
   // 先加载正则引擎
   await initRegexEngine();  
+  
   loadSettings();
   
   waitForUserName(function() {
@@ -2822,3 +2817,4 @@ log('  - mpDebug.cache() 查看缓存内容');
 log('  - mpDebug.testRemoteRegex(text, senderId) 测试远程正则');
 
 log('  - mpDebug.testLocalRegex(text) 测试本地正则');
+
