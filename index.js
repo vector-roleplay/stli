@@ -1502,26 +1502,28 @@ function setupEventListeners() {
     if (!turnState.isMyTurn || !isGenerating) return;
     
     // 只有真正完成自己的生成后才清空缓存
-    clearRemoteWorldInfoCache();
-    
-    log('事件: 生成结束');
-    isGenerating = false;
-    
-    const chat = getChat();
-    const lastMsg = chat[chat.length - 1];
-    if (!lastMsg || lastMsg.is_user) return;
-    if (lastMsg.extra && lastMsg.extra.isRemote) return;
-    
-    sendWS({
-      type: 'syncAiComplete',
-      content: lastMsg.mes,
-      charName: lastMsg.name,
-      senderName: userName,
-      timestamp: Date.now()
-    });
-    
-    sendWS({ type: 'aiGenerationEnded' });
-});
+clearRemoteWorldInfoCache();
+
+log('事件: 生成结束');
+isGenerating = false;
+
+// 延迟100ms确保消息完全更新
+setTimeout(function() {
+  const chat = getChat();
+  const lastMsg = chat[chat.length - 1];
+  if (!lastMsg || lastMsg.is_user) return;
+  if (lastMsg.extra && lastMsg.extra.isRemote) return;
+  
+  sendWS({
+    type: 'syncAiComplete',
+    content: lastMsg.mes,
+    charName: lastMsg.name,
+    senderName: userName,
+    timestamp: Date.now()
+  });
+  
+  sendWS({ type: 'aiGenerationEnded' });
+}, 100);
   
   // ===== 6. 生成停止 =====
   eventSource.on(event_types.GENERATION_STOPPED, function() {
