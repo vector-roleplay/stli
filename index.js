@@ -3,7 +3,8 @@
 // 服务器: wss://chu.zeabur.app
 // 修复: 正则同步功能（完整字段+隔离处理）
 // ========================================
-
+import { eventSource, event_types, saveSettingsDebounced } from '../../../../script.js';
+import { extension_settings, getContext } from '../../../extensions.js';
 // ========================================
 // 正则引擎兼容层（手机端修复）
 // ========================================
@@ -2817,4 +2818,5 @@ log('  - mpDebug.cache() 查看缓存内容');
 log('  - mpDebug.testRemoteRegex(text, senderId) 测试远程正则');
 
 log('  - mpDebug.testLocalRegex(text) 测试本地正则');
+
 
