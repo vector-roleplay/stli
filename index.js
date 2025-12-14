@@ -578,27 +578,25 @@ function clearRemoteWorldInfoCache() {
   log('已清空远程世界书缓存');
 }
 
-
-// ========== 使用 extensionPrompt 注入远程世界书（修复版）==========
+// ========== 使用 extensionPrompt 注入远程世界书（最终修复版）==========
 const INJECTION_KEY = 'multiplayer_remote_worldinfo';
+
+// 硬编码酒馆的常量值（来自官方源码）
+const EXTENSION_PROMPT_TYPES = {
+  NONE: -1,
+  IN_PROMPT: 0,
+  IN_CHAT: 1,
+  BEFORE_PROMPT: 2
+};
+
+const EXTENSION_PROMPT_ROLES = {
+  SYSTEM: 0,
+  USER: 1,
+  ASSISTANT: 2
+};
 
 function injectRemoteWorldInfoViaExtensionPrompt() {
   if (remoteWorldInfoCache.size === 0) return;
-
-  log('===== 调试 setExtensionPrompt 获取 =====');
-  log('window.setExtensionPrompt: ' + (typeof window.setExtensionPrompt));
-  log('window.parent?.setExtensionPrompt: ' + (typeof window.parent?.setExtensionPrompt));
-  log('window.extension_prompts: ' + (typeof window.extension_prompts));
-  log('window.parent?.extension_prompts: ' + (typeof window.parent?.extension_prompts));
-  
-  try {
-    const ctx = getContext();
-    log('getContext().setExtensionPrompt: ' + (typeof ctx.setExtensionPrompt));
-    log('getContext().extensionPrompts: ' + (typeof ctx.extensionPrompts));
-  } catch(e) {
-    log('getContext 调用失败: ' + e);
-  }
-  log('========================================');
   
   // 构建注入内容
   const playerNames = [];
@@ -628,49 +626,47 @@ function injectRemoteWorldInfoViaExtensionPrompt() {
   
   const fullContent = template + '\n\n' + contents.join('\n\n');
   
-  // ===== 修复：多种方式尝试获取 setExtensionPrompt =====
+  // ===== 获取 setExtensionPrompt =====
   let setExtensionPrompt = null;
-  let extension_prompt_types = null;
   
   // 方式1：直接从 window 获取
   if (typeof window.setExtensionPrompt === 'function') {
     setExtensionPrompt = window.setExtensionPrompt;
-    extension_prompt_types = window.extension_prompt_types;
+    log('通过 window 获取 setExtensionPrompt');
   }
-  // 方式2：从 window.parent 获取（扩展在iframe中时）
+  // 方式2：从 window.parent 获取
   else if (typeof window.parent?.setExtensionPrompt === 'function') {
     setExtensionPrompt = window.parent.setExtensionPrompt;
-    extension_prompt_types = window.parent.extension_prompt_types;
+    log('通过 window.parent 获取 setExtensionPrompt');
   }
- // 方式3：从已导入的 getContext 获取（修复！）
-else {
-  try {
-    const ctx = getContext();  // 使用扩展导入的 getContext
-    if (typeof ctx.setExtensionPrompt === 'function') {
-      setExtensionPrompt = ctx.setExtensionPrompt;
-      extension_prompt_types = ctx.extension_prompt_types;
-      log('通过 getContext() 获取成功');
-    }
-  } catch(e) {
-    log('getContext 获取失败: ' + e);
-  }
-}
-  
-  
-  // 使用获取到的函数
-  if (typeof setExtensionPrompt === 'function' && extension_prompt_types) {
+  // 方式3：从 getContext 获取
+  else {
     try {
+      const ctx = getContext();
+      if (typeof ctx.setExtensionPrompt === 'function') {
+        setExtensionPrompt = ctx.setExtensionPrompt;
+        log('通过 getContext() 获取 setExtensionPrompt');
+      }
+    } catch(e) {
+      log('getContext 获取失败: ' + e);
+    }
+  }
+  
+  // 调用注入函数
+  if (typeof setExtensionPrompt === 'function') {
+    try {
+      // 参数顺序：key, value, position, depth, scan, role, filter
       setExtensionPrompt(
-        INJECTION_KEY,
-        fullContent,
-        extension_prompt_types.IN_PROMPT,
-        0,
-        true
+        INJECTION_KEY,                    // key
+        fullContent,                       // value
+        EXTENSION_PROMPT_TYPES.IN_PROMPT,  // position = 0
+        0,                                 // depth
+        true,                              // scan
+        EXTENSION_PROMPT_ROLES.SYSTEM      // role = 0
       );
-      log('已通过 extensionPrompt 注入远程世界书: ' + contents.length + ' 条');
+      log('已通过 setExtensionPrompt 注入远程世界书: ' + contents.length + ' 条');
     } catch(e) {
       log('setExtensionPrompt 调用失败: ' + e);
-      // 备用方案
       tryAlternativeInjection(fullContent);
     }
   } else {
@@ -679,80 +675,30 @@ else {
   }
 }
 
-// ========== 备用注入方案：直接修改 extensionPrompts ==========
-function tryAlternativeInjection(content) {
-  try {
-    // 方式A：直接操作 extension_prompts 对象
-    const extensionPrompts = window.extension_prompts || window.parent?.extension_prompts;
-    
-    if (extensionPrompts) {
-      extensionPrompts[INJECTION_KEY] = {
-        value: content,
-        position: 1,  // IN_PROMPT
-        depth: 0,
-        scan: true
-      };
-      log('备用方案A成功：直接写入 extension_prompts');
-      return true;
-    }
-  } catch(e) {
-    log('备用方案A失败: ' + e);
-  }
-  
-  try {
-    // 方式B：通过 getContext 的 extensionPrompts
-    const ctx = getContext();
-    if (ctx.extensionPrompts) {
-      ctx.extensionPrompts[INJECTION_KEY] = {
-        value: content,
-        position: 1,
-        depth: 0,
-        scan: true
-      };
-      log('备用方案B成功：通过 getContext 写入');
-      return true;
-    }
-  } catch(e) {
-    log('备用方案B失败: ' + e);
-  }
-  
-  log('所有注入方案都失败了');
-  return false;
-}
-
-// ========== 清除注入的 extensionPrompt（修复版）==========
+// ========== 清除注入（最终修复版）==========
 function clearInjectedExtensionPrompt() {
   try {
     let setExtensionPrompt = null;
-    let extension_prompt_types = null;
     
-    // 方式1：从 window 获取
     if (typeof window.setExtensionPrompt === 'function') {
       setExtensionPrompt = window.setExtensionPrompt;
-      extension_prompt_types = window.extension_prompt_types;
-    }
-    // 方式2：从 window.parent 获取
-    else if (typeof window.parent?.setExtensionPrompt === 'function') {
+    } else if (typeof window.parent?.setExtensionPrompt === 'function') {
       setExtensionPrompt = window.parent.setExtensionPrompt;
-      extension_prompt_types = window.parent.extension_prompt_types;
-    }
-    // 方式3：从 getContext 获取（关键修复！）
-    else {
+    } else {
       try {
         const ctx = getContext();
         if (typeof ctx.setExtensionPrompt === 'function') {
           setExtensionPrompt = ctx.setExtensionPrompt;
-          extension_prompt_types = ctx.extension_prompt_types;
         }
       } catch(e) {}
     }
     
-    // 使用获取到的函数清除
-    if (typeof setExtensionPrompt === 'function' && extension_prompt_types) {
-      setExtensionPrompt(INJECTION_KEY, '', extension_prompt_types.IN_PROMPT, 0, false);
+    if (typeof setExtensionPrompt === 'function') {
+      // 用空字符串清除
+      setExtensionPrompt(INJECTION_KEY, '', EXTENSION_PROMPT_TYPES.IN_PROMPT, 0, false);
     }
     
-    // 同时清理 extensionPrompts 对象（保险）
+    // 同时清理 extensionPrompts 对象
     try {
       const ctx = getContext();
       if (ctx.extensionPrompts && ctx.extensionPrompts[INJECTION_KEY]) {
