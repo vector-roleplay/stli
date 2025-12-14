@@ -578,11 +578,27 @@ function clearRemoteWorldInfoCache() {
   log('已清空远程世界书缓存');
 }
 
-// ========== 使用 extensionPrompt 注入远程世界书（新方法）==========
+
+// ========== 使用 extensionPrompt 注入远程世界书（修复版）==========
 const INJECTION_KEY = 'multiplayer_remote_worldinfo';
 
 function injectRemoteWorldInfoViaExtensionPrompt() {
   if (remoteWorldInfoCache.size === 0) return;
+
+  log('===== 调试 setExtensionPrompt 获取 =====');
+  log('window.setExtensionPrompt: ' + (typeof window.setExtensionPrompt));
+  log('window.parent?.setExtensionPrompt: ' + (typeof window.parent?.setExtensionPrompt));
+  log('window.extension_prompts: ' + (typeof window.extension_prompts));
+  log('window.parent?.extension_prompts: ' + (typeof window.parent?.extension_prompts));
+  
+  try {
+    const ctx = getContext();
+    log('getContext().setExtensionPrompt: ' + (typeof ctx.setExtensionPrompt));
+    log('getContext().extensionPrompts: ' + (typeof ctx.extensionPrompts));
+  } catch(e) {
+    log('getContext 调用失败: ' + e);
+  }
+  log('========================================');
   
   // 构建注入内容
   const playerNames = [];
@@ -600,7 +616,10 @@ function injectRemoteWorldInfoViaExtensionPrompt() {
     }
   });
   
-  if (contents.length === 0) return;
+  if (contents.length === 0) {
+    log('没有需要注入的内容');
+    return;
+  }
   
   // 生成联机模板
   const template = '[联机模式]\n当前有多位玩家参与创作：\n' + 
@@ -609,12 +628,49 @@ function injectRemoteWorldInfoViaExtensionPrompt() {
   
   const fullContent = template + '\n\n' + contents.join('\n\n');
   
-  // 使用酒馆官方 API 注入
-  try {
-    const setExtensionPrompt = window.setExtensionPrompt;
-    const extension_prompt_types = window.extension_prompt_types;
-    
-    if (typeof setExtensionPrompt === 'function' && extension_prompt_types) {
+  // ===== 修复：多种方式尝试获取 setExtensionPrompt =====
+  let setExtensionPrompt = null;
+  let extension_prompt_types = null;
+  
+  // 方式1：直接从 window 获取
+  if (typeof window.setExtensionPrompt === 'function') {
+    setExtensionPrompt = window.setExtensionPrompt;
+    extension_prompt_types = window.extension_prompt_types;
+  }
+  // 方式2：从 window.parent 获取（扩展在iframe中时）
+  else if (typeof window.parent?.setExtensionPrompt === 'function') {
+    setExtensionPrompt = window.parent.setExtensionPrompt;
+    extension_prompt_types = window.parent.extension_prompt_types;
+  }
+  // 方式3：从 SillyTavern 全局对象获取
+  else {
+    try {
+      const ST = window.SillyTavern || window.parent?.SillyTavern;
+      if (ST && ST.getContext) {
+        const ctx = ST.getContext();
+        // 尝试从模块导出获取
+        setExtensionPrompt = ctx.setExtensionPrompt;
+        extension_prompt_types = ctx.extension_prompt_types;
+      }
+    } catch(e) {
+      log('getContext 获取失败: ' + e);
+    }
+  }
+  
+  // 方式4：尝试从全局 modules 获取（某些版本的酒馆）
+  if (!setExtensionPrompt) {
+    try {
+      // 检查是否有全局导出
+      if (window.modules?.setExtensionPrompt) {
+        setExtensionPrompt = window.modules.setExtensionPrompt;
+        extension_prompt_types = window.modules.extension_prompt_types;
+      }
+    } catch(e) {}
+  }
+  
+  // 使用获取到的函数
+  if (typeof setExtensionPrompt === 'function' && extension_prompt_types) {
+    try {
       setExtensionPrompt(
         INJECTION_KEY,
         fullContent,
@@ -623,26 +679,87 @@ function injectRemoteWorldInfoViaExtensionPrompt() {
         true
       );
       log('已通过 extensionPrompt 注入远程世界书: ' + contents.length + ' 条');
-    } else {
-      log('setExtensionPrompt 不可用');
+    } catch(e) {
+      log('setExtensionPrompt 调用失败: ' + e);
+      // 备用方案
+      tryAlternativeInjection(fullContent);
     }
-  } catch(e) {
-    log('注入失败: ' + e);
+  } else {
+    log('setExtensionPrompt 不可用，尝试备用方案');
+    tryAlternativeInjection(fullContent);
   }
 }
 
-// ========== 清除注入的 extensionPrompt ==========
+// ========== 备用注入方案：直接修改 extensionPrompts ==========
+function tryAlternativeInjection(content) {
+  try {
+    // 方式A：直接操作 extension_prompts 对象
+    const extensionPrompts = window.extension_prompts || window.parent?.extension_prompts;
+    
+    if (extensionPrompts) {
+      extensionPrompts[INJECTION_KEY] = {
+        value: content,
+        position: 1,  // IN_PROMPT
+        depth: 0,
+        scan: true
+      };
+      log('备用方案A成功：直接写入 extension_prompts');
+      return true;
+    }
+  } catch(e) {
+    log('备用方案A失败: ' + e);
+  }
+  
+  try {
+    // 方式B：通过 getContext 的 extensionPrompts
+    const ctx = getContext();
+    if (ctx.extensionPrompts) {
+      ctx.extensionPrompts[INJECTION_KEY] = {
+        value: content,
+        position: 1,
+        depth: 0,
+        scan: true
+      };
+      log('备用方案B成功：通过 getContext 写入');
+      return true;
+    }
+  } catch(e) {
+    log('备用方案B失败: ' + e);
+  }
+  
+  log('所有注入方案都失败了');
+  return false;
+}
+
+// ========== 清除注入的 extensionPrompt（修复版）==========
 function clearInjectedExtensionPrompt() {
   try {
-    const setExtensionPrompt = window.setExtensionPrompt;
-    const extension_prompt_types = window.extension_prompt_types;
+    // 尝试多种方式清除
+    let setExtensionPrompt = window.setExtensionPrompt || window.parent?.setExtensionPrompt;
+    let extension_prompt_types = window.extension_prompt_types || window.parent?.extension_prompt_types;
     
     if (typeof setExtensionPrompt === 'function' && extension_prompt_types) {
       setExtensionPrompt(INJECTION_KEY, '', extension_prompt_types.IN_PROMPT, 0, false);
     }
-  } catch(e) {}
+    
+    // 同时清理 extension_prompts 对象
+    const extensionPrompts = window.extension_prompts || window.parent?.extension_prompts;
+    if (extensionPrompts && extensionPrompts[INJECTION_KEY]) {
+      delete extensionPrompts[INJECTION_KEY];
+    }
+    
+    // 通过 getContext 清理
+    try {
+      const ctx = getContext();
+      if (ctx.extensionPrompts && ctx.extensionPrompts[INJECTION_KEY]) {
+        delete ctx.extensionPrompts[INJECTION_KEY];
+      }
+    } catch(e) {}
+    
+  } catch(e) {
+    log('清除注入失败: ' + e);
+  }
 }
-
 // ========== 调试函数 ==========
 async function debugWorldInfo() {
   console.log('===== 世界书调试信息 =====');
