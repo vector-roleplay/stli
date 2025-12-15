@@ -885,12 +885,6 @@ function handleRemoteAiComplete(msg) {
   const chat = getChat();
   const ctx = getContext();
   const streamInfo = remoteStreamMap.get(msg.senderId);
-
-  // 接收方 - handleRemoteAiComplete 中
-function handleRemoteAiComplete(msg) {
-  const chat = getChat();
-  const ctx = getContext();
-  const streamInfo = remoteStreamMap.get(msg.senderId);
   
   // ===== 弹窗调试 =====
   const debugInfo = [
@@ -2197,3 +2191,4 @@ log('调试命令已注册: window.mpDebug');
 log('  - mpDebug.state() 查看联机状态');
 
 log('  - mpDebug.restoreRemote() 手动恢复远程消息');
+
