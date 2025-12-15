@@ -1869,7 +1869,8 @@ function buildPanelHTML() {
   return html;
 }
 
-function openPanel() {
+
+ function openPanel() {
   closePanel();
   
   const overlay = $('<div id="mp-main-overlay"></div>');
@@ -1877,17 +1878,20 @@ function openPanel() {
     'position': 'fixed',
     'top': '0',
     'left': '0',
+    'right': '0',
+    'bottom': '0',
     'width': '100%',
     'height': '100%',
     'background': 'rgba(0,0,0,0.7)',
     'z-index': '99998',
     'display': 'flex',
-    'align-items': 'center',
-    'justify-content': 'center',
+    'align-items': 'center',      // 垂直居中
+    'justify-content': 'center',  // 水平居中
     'padding': '20px',
-    'box-sizing': 'border-box'
+    'box-sizing': 'border-box',
+    'overflow': 'auto'            // 允许滚动
   });
-  
+   
   overlay.on('click', function(e) {
     if (e.target === this) closePanel();
   });
@@ -2241,6 +2245,7 @@ log('调试命令已注册: window.mpDebug');
 log('  - mpDebug.state() 查看联机状态');
 
 log('  - mpDebug.restoreRemote() 手动恢复远程消息');
+
 
 
 
