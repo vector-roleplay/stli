@@ -940,6 +940,13 @@ function handleRemoteAiComplete(msg) {
         log('触发事件失败: ' + e);
       }
     }, 100);
+
+    // ===== 新增：500ms后检查DOM是否被篡改 =====
+setTimeout(() => {
+  const mesTextLater = $(`.mes[mesid="${messageId}"] .mes_text`);
+  alert('500ms后DOM前100字: ' + mesTextLater.html().substring(0, 100));
+}, 500);
+// =====
     
     setTimeout(() => addRemoteTag(messageId, '联机AI', 'ai'), 200);
     
@@ -2205,5 +2212,6 @@ log('调试命令已注册: window.mpDebug');
 log('  - mpDebug.state() 查看联机状态');
 
 log('  - mpDebug.restoreRemote() 手动恢复远程消息');
+
 
 
