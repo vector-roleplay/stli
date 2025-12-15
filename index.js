@@ -2044,7 +2044,7 @@ function showConfirmPopup(title, msg, onConfirm) {
     'width': '100%',
     'height': '100%',
     'background': 'rgba(0,0,0,0.8)',
-    'z-index': '999999',
+    'z-index': '2147483647',
     'display': 'flex',
     'align-items': 'center',
     'justify-content': 'center'
@@ -2088,7 +2088,7 @@ function showInvitePopup(type, fromName, fromId, roomId) {
     'width': '100%',
     'height': '100%',
     'background': 'rgba(0,0,0,0.8)',
-    'z-index': '999999',
+    'z-index': '2147483647',
     'display': 'flex',
     'align-items': 'center',
     'justify-content': 'center'
@@ -2242,6 +2242,7 @@ log('调试命令已注册: window.mpDebug');
 log('  - mpDebug.state() 查看联机状态');
 
 log('  - mpDebug.restoreRemote() 手动恢复远程消息');
+
 
 
 
