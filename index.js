@@ -881,82 +881,116 @@ function handleRemoteAiStream(msg) {
   } catch(e) {}
 }
 
+// ========================================
+// 远程消息保护器
+// ========================================
+
+const remoteMessageObservers = new Map();
+
+function protectRemoteMessage(messageId, correctHtml) {
+  // 清理已有的 observer
+  if (remoteMessageObservers.has(messageId)) {
+    remoteMessageObservers.get(messageId).disconnect();
+  }
+  
+  const element = document.querySelector(`.mes[mesid="${messageId}"] .mes_text`);
+  if (!element) return;
+  
+  let isRestoring = false;  // 防止自己触发自己
+  
+  const observer = new MutationObserver(() => {
+    if (isRestoring) return;
+    
+    log('检测到远程消息被篡改，恢复: #' + messageId);
+    
+    isRestoring = true;
+    element.innerHTML = correctHtml;
+    
+    setTimeout(() => {
+      isRestoring = false;
+    }, 100);
+  });
+  
+  observer.observe(element, { 
+    childList: true, 
+    subtree: true, 
+    characterData: true 
+  });
+  
+  remoteMessageObservers.set(messageId, observer);
+  log('已设置远程消息保护: #' + messageId);
+}
+
+function clearRemoteMessageProtection(messageId) {
+  if (remoteMessageObservers.has(messageId)) {
+    remoteMessageObservers.get(messageId).disconnect();
+    remoteMessageObservers.delete(messageId);
+  }
+}
+
+// ========================================
+// 然后是 handleRemoteAiComplete 函数
+// ========================================
+
 function handleRemoteAiComplete(msg) {
   const chat = getChat();
   const ctx = getContext();
   const streamInfo = remoteStreamMap.get(msg.senderId);
-  
-  // ===== 弹窗调试 =====
-  const debugInfo = [
-    '长度: ' + (msg.formattedHtml?.length || 0),
-    '含<pre: ' + (msg.formattedHtml?.includes('<pre') ? '是' : '否'),
-    '含&lt;: ' + (msg.formattedHtml?.includes('&lt;') ? '是' : '否'),
-    '前100字: ' + (msg.formattedHtml?.substring(0, 100) || '空')
-  ].join('\n');
-  
-  alert('接收方调试:\n' + debugInfo);
-  // ===== 弹窗调试结束 =====
-  
+
   log('远程AI完成，HTML长度: ' + (msg.formattedHtml?.length || 0));
 
-  // ===== 新增：确认走哪个分支 =====
-  alert('streamInfo 存在: ' + (streamInfo ? '是，messageId=' + streamInfo.messageId : '否'));
-  // =====
-  
   if (streamInfo) {
-    // 完成流式消息
     const messageId = streamInfo.messageId;
-    
-    // ⭐ 直接存格式化后的HTML
-    if (chat[messageId]) {
-      chat[messageId].mes = msg.formattedHtml;
-      if (chat[messageId].extra) {
-        chat[messageId].extra.isStreaming = false;
-      }
-    }
-    
-    // ⭐ 用格式化后的HTML覆盖DOM
-    const mesText = $(`.mes[mesid="${messageId}"] .mes_text`);
 
-    
-    // ===== 新增：确认 DOM 覆盖 =====
-    alert('mesText 找到: ' + (mesText.length > 0 ? '是' : '否'));
-    // =====
-    
+    // ⭐ 关键修改：存储到 extra，mes 保持简单内容
+    if (chat[messageId]) {
+      chat[messageId].mes = '[远程消息]';  // 简单占位符，不会产生乱码
+      chat[messageId].extra = chat[messageId].extra || {};
+      chat[messageId].extra.isRemote = true;
+      chat[messageId].extra.isStreaming = false;
+      chat[messageId].extra.remoteFormattedHtml = msg.formattedHtml;  // ⭐ 存这里
+      chat[messageId].extra.remoteSenderId = msg.senderId;
+    }
+
+    // 覆盖 DOM
+    const mesText = $(`.mes[mesid="${messageId}"] .mes_text`);
     if (mesText.length) {
       mesText.html(msg.formattedHtml);
-
-      // ===== 新增：确认覆盖后的内容 =====
-      alert('覆盖后前100字: ' + mesText.html().substring(0, 100));
-      // =====
     }
-    
-    // 触发事件让酒馆助手处理
+
+    // ⭐ 设置保护器
+    protectRemoteMessage(messageId, msg.formattedHtml);
+
+    // 触发事件让酒馆助手处理（创建 iframe）
     setTimeout(() => {
       try {
         ctx.eventSource.emit(ctx.eventTypes.CHARACTER_MESSAGE_RENDERED, messageId);
-        log('已触发 CHARACTER_MESSAGE_RENDERED: #' + messageId);
-      } catch(e) {
-        log('触发事件失败: ' + e);
-      }
+      } catch(e) {}
     }, 100);
 
-    // ===== 新增：500ms后检查DOM是否被篡改 =====
-setTimeout(() => {
-  const mesTextLater = $(`.mes[mesid="${messageId}"] .mes_text`);
-  alert('500ms后DOM前100字: ' + mesTextLater.html().substring(0, 100));
-}, 500);
-// =====
-    
+    // ⭐ 事件触发后再次确保内容正确
+    setTimeout(() => {
+      const mesTextLater = $(`.mes[mesid="${messageId}"] .mes_text`);
+      if (mesTextLater.length && chat[messageId]?.extra?.remoteFormattedHtml) {
+        // 检查是否被篡改（查找 TH-render 说明酒馆助手已处理完）
+        if (mesTextLater.find('.TH-render').length === 0) {
+          // 酒馆助手还没处理，再等等
+        } else {
+          // 已处理完，重新保护
+          protectRemoteMessage(messageId, msg.formattedHtml);
+        }
+      }
+    }, 500);
+
     setTimeout(() => addRemoteTag(messageId, '联机AI', 'ai'), 200);
-    
+
     remoteStreamMap.delete(msg.senderId);
-    
+
     if (ctx.saveSettingsDebounced) ctx.saveSettingsDebounced();
-    
     log('远程AI消息完成(流式): #' + messageId);
-    
+
   } else {
+  
     // 直接创建完整消息（没有流式阶段）
     const msgKey = msg.senderId + '_' + msg.timestamp + '_ai';
     if (processedMsgCache.has(msgKey)) return;
@@ -1012,36 +1046,31 @@ setTimeout(() => {
 function restoreRemoteMessages() {
   const chat = getChat();
   if (!chat || chat.length === 0) return;
-  
-  const ctx = getContext();
+
   let restoredCount = 0;
-  
+
   chat.forEach((msg, messageId) => {
-    // 检查是否是远程消息
-    if (msg?.extra?.isRemote && !msg?.is_user) {
+    // ⭐ 从 extra.remoteFormattedHtml 读取
+    if (msg?.extra?.isRemote && msg?.extra?.remoteFormattedHtml) {
       const mesText = $(`.mes[mesid="${messageId}"] .mes_text`);
-      if (mesText.length && msg.mes) {
-        // ⭐ 用存储的HTML覆盖（跳过messageFormatting的结果）
-        mesText.html(msg.mes);
+      if (mesText.length) {
+        mesText.html(msg.extra.remoteFormattedHtml);
         
-        // 触发事件让酒馆助手处理
-        try {
-          ctx.eventSource.emit(ctx.eventTypes.CHARACTER_MESSAGE_RENDERED, messageId);
-        } catch(e) {}
+        // 设置保护器
+        protectRemoteMessage(messageId, msg.extra.remoteFormattedHtml);
         
-        // 添加远程标签
+        // 添加标签
         addRemoteTag(messageId, '联机AI', 'ai');
         
         restoredCount++;
       }
     }
   });
-  
+
   if (restoredCount > 0) {
     log('已恢复 ' + restoredCount + ' 条远程消息');
   }
 }
-
 // ========================================
 // WebSocket 连接
 // ========================================
@@ -2212,6 +2241,7 @@ log('调试命令已注册: window.mpDebug');
 log('  - mpDebug.state() 查看联机状态');
 
 log('  - mpDebug.restoreRemote() 手动恢复远程消息');
+
 
 
 
