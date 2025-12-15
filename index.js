@@ -1521,47 +1521,74 @@ function setupEventListeners() {
     throttledStreamSync(text);
   });
   
-  // 生成结束 - 发送格式化后的HTML
-  eventSource.on(event_types.GENERATION_ENDED, function(messageCount) {
-    if (!currentRoom) return;
+  // 生成结束 - 从DOM获取最终渲染的HTML（等待正则处理完成）
+eventSource.on(event_types.GENERATION_ENDED, function(messageCount) {
+  if (!currentRoom) return;
+  
+  clearInjectedExtensionPrompt();
+  
+  if (!turnState.isMyTurn || !isGenerating) return;
+  
+  clearRemoteWorldInfoCache();
+  
+  log('事件: 生成结束');
+  isGenerating = false;
+  
+  const chat = getChat();
+  const lastMsg = chat[chat.length - 1];
+  if (!lastMsg || lastMsg.is_user) return;
+  if (lastMsg.extra && lastMsg.extra.isRemote) return;
+  
+  const messageId = chat.length - 1;
+  
+  // 等待所有正则和插件处理完毕，然后从DOM获取最终HTML
+  let lastHtml = '';
+  let stableCount = 0;
+  const maxWait = 5000;
+  const startTime = Date.now();
+  
+  const checkInterval = setInterval(function() {
+    const mesText = $(`.mes[mesid="${messageId}"] .mes_text`);
+    if (!mesText.length) {
+      log('找不到消息DOM: #' + messageId);
+      clearInterval(checkInterval);
+      return;
+    }
     
-    clearInjectedExtensionPrompt();
+    const currentHtml = mesText.html();
     
-    if (!turnState.isMyTurn || !isGenerating) return;
+    // 检查是否还有占位符未替换
+    const hasPlaceholder = currentHtml.includes('<StatusPlaceHolderImpl/>') ||
+                           currentHtml.includes('PlaceHolder') ||
+                           currentHtml.includes('{{') ||
+                           currentHtml.includes('}}');
     
-    clearRemoteWorldInfoCache();
+    // 检查内容是否稳定
+    if (currentHtml === lastHtml && !hasPlaceholder) {
+      stableCount++;
+    } else {
+      stableCount = 0;
+      lastHtml = currentHtml;
+    }
     
-    log('事件: 生成结束');
-    isGenerating = false;
-    
-    setTimeout(function() {
-      const chat = getChat();
-      const lastMsg = chat[chat.length - 1];
-      if (!lastMsg || lastMsg.is_user) return;
-      if (lastMsg.extra && lastMsg.extra.isRemote) return;
+    // 内容稳定2次或超时，则发送
+    if (stableCount >= 2 || (Date.now() - startTime > maxWait)) {
+      clearInterval(checkInterval);
       
-      const messageId = chat.length - 1;
+      if (hasPlaceholder) {
+        log('警告: 仍有占位符未替换，但已超时');
+      }
       
-      // 调用酒馆的 messageFormatting 获取格式化后的HTML
-      const formattedHtml = ctx.messageFormatting(
-        lastMsg.mes,
-        lastMsg.name,
-        false,
-        false,
-        messageId,
-        {},
-        false
-      );
+      const formattedHtml = mesText.html();
       
-      // ===== 同步日志：发送AI消息 =====
-      logSync('发送AI消息', {
+      logSync('发送AI消息 (从DOM获取)', {
         角色名: lastMsg.name,
-        原始消息长度: lastMsg.mes?.length || 0,
-        格式化HTML长度: formattedHtml.length,
-        包含pre标签: formattedHtml.includes('<pre') ? '是' : '否'
+        HTML长度: formattedHtml.length,
+        包含pre标签: formattedHtml.includes('<pre') ? '是' : '否',
+        等待时间: (Date.now() - startTime) + 'ms'
       });
       
-      log('发送格式化HTML，长度: ' + formattedHtml.length);
+      log('发送格式化HTML，长度: ' + formattedHtml.length + '，等待: ' + (Date.now() - startTime) + 'ms');
       
       sendWS({
         type: 'syncAiComplete',
@@ -1572,8 +1599,9 @@ function setupEventListeners() {
       });
       
       sendWS({ type: 'aiGenerationEnded' });
-    }, 100);
-  });
+    }
+  }, 200);
+});
   
   // 生成停止
   eventSource.on(event_types.GENERATION_STOPPED, function() {
@@ -2364,4 +2392,5 @@ window.mpDebug = {
 log('调试命令已注册: window.mpDebug');
 log('  - mpDebug.state() 查看联机状态');
 log('  - mpDebug.syncLog() 查看同步日志汇总');
+
 log('  - mpDebug.restoreRemote() 手动恢复远程消息');
