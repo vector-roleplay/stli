@@ -898,6 +898,10 @@ function handleRemoteAiComplete(msg) {
   // ===== 弹窗调试结束 =====
   
   log('远程AI完成，HTML长度: ' + (msg.formattedHtml?.length || 0));
+
+  // ===== 新增：确认走哪个分支 =====
+  alert('streamInfo 存在: ' + (streamInfo ? '是，messageId=' + streamInfo.messageId : '否'));
+  // =====
   
   if (streamInfo) {
     // 完成流式消息
@@ -913,8 +917,18 @@ function handleRemoteAiComplete(msg) {
     
     // ⭐ 用格式化后的HTML覆盖DOM
     const mesText = $(`.mes[mesid="${messageId}"] .mes_text`);
+
+    
+    // ===== 新增：确认 DOM 覆盖 =====
+    alert('mesText 找到: ' + (mesText.length > 0 ? '是' : '否'));
+    // =====
+    
     if (mesText.length) {
       mesText.html(msg.formattedHtml);
+
+      // ===== 新增：确认覆盖后的内容 =====
+      alert('覆盖后前100字: ' + mesText.html().substring(0, 100));
+      // =====
     }
     
     // 触发事件让酒馆助手处理
@@ -2191,4 +2205,5 @@ log('调试命令已注册: window.mpDebug');
 log('  - mpDebug.state() 查看联机状态');
 
 log('  - mpDebug.restoreRemote() 手动恢复远程消息');
+
 
