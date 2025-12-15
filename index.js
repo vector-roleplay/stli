@@ -885,6 +885,23 @@ function handleRemoteAiComplete(msg) {
   const chat = getChat();
   const ctx = getContext();
   const streamInfo = remoteStreamMap.get(msg.senderId);
+
+  // 接收方 - handleRemoteAiComplete 中
+function handleRemoteAiComplete(msg) {
+  const chat = getChat();
+  const ctx = getContext();
+  const streamInfo = remoteStreamMap.get(msg.senderId);
+  
+  // ===== 弹窗调试 =====
+  const debugInfo = [
+    '长度: ' + (msg.formattedHtml?.length || 0),
+    '含<pre: ' + (msg.formattedHtml?.includes('<pre') ? '是' : '否'),
+    '含&lt;: ' + (msg.formattedHtml?.includes('&lt;') ? '是' : '否'),
+    '前100字: ' + (msg.formattedHtml?.substring(0, 100) || '空')
+  ].join('\n');
+  
+  alert('接收方调试:\n' + debugInfo);
+  // ===== 弹窗调试结束 =====
   
   log('远程AI完成，HTML长度: ' + (msg.formattedHtml?.length || 0));
   
@@ -1410,6 +1427,14 @@ function setupEventListeners() {
         {},     // sanitizerOverrides
         false   // isReasoning
       );
+
+      // ===== 在这里添加调试日志 =====
+    console.log('=== 发送方 formattedHtml ===');
+    console.log('长度:', formattedHtml.length);
+    console.log('前500字符:', formattedHtml.substring(0, 500));
+    console.log('是否包含 <pre:', formattedHtml.includes('<pre'));
+    console.log('是否包含 &lt;:', formattedHtml.includes('&lt;'));
+    // ===== 调试日志结束 =====
       
       log('发送格式化HTML，长度: ' + formattedHtml.length);
       
@@ -2170,4 +2195,5 @@ window.mpDebug = {
 
 log('调试命令已注册: window.mpDebug');
 log('  - mpDebug.state() 查看联机状态');
+
 log('  - mpDebug.restoreRemote() 手动恢复远程消息');
