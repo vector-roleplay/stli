@@ -1883,7 +1883,7 @@ function buildPanelHTML() {
     'width': '100%',
     'height': '100%',
     'background': 'rgba(0,0,0,0.7)',
-    'z-index': '99998',
+    'z-index': '2147483647',
     'display': 'flex',
     'align-items': 'center',      // 垂直居中
     'justify-content': 'center',  // 水平居中
@@ -2245,6 +2245,7 @@ log('调试命令已注册: window.mpDebug');
 log('  - mpDebug.state() 查看联机状态');
 
 log('  - mpDebug.restoreRemote() 手动恢复远程消息');
+
 
 
 
