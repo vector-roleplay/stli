@@ -11,7 +11,7 @@ import { eventSource, event_types } from '../../../../script.js';
 import { extension_settings, getContext } from '../../../extensions.js';
 
 // ========== 扩展配置 ==========
-const extensionName = 'tavern-multiplayer';
+const extensionName = 'stli';
 const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
 
 const defaultSettings = {
@@ -2402,6 +2402,7 @@ log('  - mpDebug.state() 查看联机状态');
 log('  - mpDebug.syncLog() 查看同步日志汇总');
 
 log('  - mpDebug.restoreRemote() 手动恢复远程消息');
+
 
 
 
