@@ -1430,22 +1430,59 @@ function handleMessage(msg) {
 // 事件监听设置
 // ========================================
 
+
 function setupEventListeners() {
   const ctx = getContext();
   
-  // 生成开始 - 注入远程内容
+  // ========== 劫持 messageFormatting ==========
+  const originalMessageFormatting = ctx.messageFormatting;
+  let capturedHtml = null;
+  let capturedMessageId = null;
+  
+  ctx.messageFormatting = function(mes, ch_name, isSystem, isUser, messageId, sanitizerOverrides, isReasoning) {
+    // 调用原函数
+    const result = originalMessageFormatting.call(this, mes, ch_name, isSystem, isUser, messageId, sanitizerOverrides, isReasoning);
+    
+    // 判断是否需要捕获
+    if (currentRoom && 
+        turnState.isMyTurn && 
+        isGenerating && 
+        !isUser && 
+        !isSystem && 
+        !isReasoning &&
+        messageId >= 0) {
+      
+      const chat = getChat();
+      const msg = chat[messageId];
+      
+      // 确保不是远程消息
+      if (msg && !msg.extra?.isRemote) {
+        capturedHtml = result;
+        capturedMessageId = messageId;
+        log('劫持到 messageFormatting，消息#' + messageId + '，长度: ' + result.length);
+      }
+    }
+    
+    return result;
+  };
+  
+  log('已劫持 messageFormatting');
+  // ========== 劫持结束 ==========
+  
+  // 生成开始
   eventSource.on(event_types.GENERATION_STARTED, function(type, options, dryRun) {
     if (dryRun) return;
     if (!currentRoom) return;
     
     log('事件: 生成开始');
     isGenerating = true;
+    capturedHtml = null;  // 清空上次的捕获
+    capturedMessageId = null;
     
     if (remoteWorldInfoCache.size > 0) {
       injectRemoteWorldInfoViaExtensionPrompt();
     }
-  });
-  
+  });  
   // 用户消息发送后 - 构建对照组
   eventSource.on(event_types.MESSAGE_SENT, async function(messageId) {
     if (!currentRoom || !turnState.isMyTurn) return;
@@ -1526,7 +1563,7 @@ function setupEventListeners() {
     throttledStreamSync(text);
   });
   
-  // 生成结束 - 从DOM获取最终渲染的HTML（等待正则处理完成）
+ // 生成结束 - 使用劫持到的HTML
 eventSource.on(event_types.GENERATION_ENDED, function(messageCount) {
   if (!currentRoom) return;
   
@@ -1539,65 +1576,25 @@ eventSource.on(event_types.GENERATION_ENDED, function(messageCount) {
   log('事件: 生成结束');
   isGenerating = false;
   
-  const chat = getChat();
-  const lastMsg = chat[chat.length - 1];
-  if (!lastMsg || lastMsg.is_user) return;
-  if (lastMsg.extra && lastMsg.extra.isRemote) return;
-  
-  const messageId = chat.length - 1;
-  
-  // 等待所有正则和插件处理完毕，然后从DOM获取最终HTML
-  let lastHtml = '';
-  let stableCount = 0;
-  const maxWait = 5000;
-  const startTime = Date.now();
-  
-  const checkInterval = setInterval(function() {
-    const mesText = $(`.mes[mesid="${messageId}"] .mes_text`);
-    if (!mesText.length) {
-      log('找不到消息DOM: #' + messageId);
-      clearInterval(checkInterval);
-      return;
-    }
+  // 使用劫持到的HTML
+  if (capturedHtml && capturedMessageId !== null) {
+    const chat = getChat();
+    const lastMsg = chat[capturedMessageId];
     
-    const currentHtml = mesText.html();
-    
-    // 检查是否还有占位符未替换
-    const hasPlaceholder = currentHtml.includes('<StatusPlaceHolderImpl/>') ||
-                           currentHtml.includes('PlaceHolder') ||
-                           currentHtml.includes('{{') ||
-                           currentHtml.includes('}}');
-    
-    // 检查内容是否稳定
-    if (currentHtml === lastHtml && !hasPlaceholder) {
-      stableCount++;
-    } else {
-      stableCount = 0;
-      lastHtml = currentHtml;
-    }
-    
-    // 内容稳定2次或超时，则发送
-    if (stableCount >= 2 || (Date.now() - startTime > maxWait)) {
-      clearInterval(checkInterval);
-      
-      if (hasPlaceholder) {
-        log('警告: 仍有占位符未替换，但已超时');
-      }
-      
-      const formattedHtml = mesText.html();
-      
-      logSync('发送AI消息 (从DOM获取)', {
+    if (lastMsg && !lastMsg.is_user && !lastMsg.extra?.isRemote) {
+      logSync('发送AI消息 (劫持获取)', {
         角色名: lastMsg.name,
-        HTML长度: formattedHtml.length,
-        包含pre标签: formattedHtml.includes('<pre') ? '是' : '否',
-        等待时间: (Date.now() - startTime) + 'ms'
+        HTML长度: capturedHtml.length,
+        包含pre标签: capturedHtml.includes('<pre') ? '是' : '否',
+        包含iframe: capturedHtml.includes('<iframe') ? '是(有问题)' : '否(正确)',
+        包含TH-render: capturedHtml.includes('TH-render') ? '是(有问题)' : '否(正确)'
       });
       
-      log('发送格式化HTML，长度: ' + formattedHtml.length + '，等待: ' + (Date.now() - startTime) + 'ms');
+      log('发送格式化HTML，长度: ' + capturedHtml.length);
       
       sendWS({
         type: 'syncAiComplete',
-        formattedHtml: formattedHtml,
+        formattedHtml: capturedHtml,
         charName: lastMsg.name,
         senderName: userName,
         timestamp: Date.now()
@@ -1605,7 +1602,13 @@ eventSource.on(event_types.GENERATION_ENDED, function(messageCount) {
       
       sendWS({ type: 'aiGenerationEnded' });
     }
-  }, 200);
+  } else {
+    log('警告: 没有捕获到 HTML');
+  }
+  
+  // 清空捕获
+  capturedHtml = null;
+  capturedMessageId = null;
 });
   
   // 生成停止
@@ -2399,4 +2402,5 @@ log('  - mpDebug.state() 查看联机状态');
 log('  - mpDebug.syncLog() 查看同步日志汇总');
 
 log('  - mpDebug.restoreRemote() 手动恢复远程消息');
+
 
