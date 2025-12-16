@@ -1587,7 +1587,7 @@ eventSource.on(event_types.GENERATION_ENDED, function(messageCount) {
         HTML长度: capturedHtml.length,
         包含pre标签: capturedHtml.includes('<pre') ? '是' : '否',
         包含iframe: capturedHtml.includes('<iframe') ? '是(有问题)' : '否(正确)',
-        包含TH-render: capturedHtml.includes('TH-render') ? '是(有问题)' : '否(正确)'
+        包含THrender: capturedHtml.includes('TH-render') ? '是(有问题)' : '否(正确)'
       });
       
       log('发送格式化HTML，长度: ' + capturedHtml.length);
@@ -2396,4 +2396,5 @@ window.mpDebug = {
   get worldInfoCache() { return remoteWorldInfoCache; },
   get messageObservers() { return remoteMessageObservers; }
 };
+
 
