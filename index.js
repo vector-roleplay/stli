@@ -333,6 +333,23 @@ function setupEventInterceptor() {
           msg && !msg.is_user && !msg.extra?.isRemote) {
         
         const mesText = document.querySelector(`.mes[mesid="${messageId}"] .mes_text`);
+
+        // ========== 添加这段详细日志 ==========
+        console.log('========== 事件拦截详细调试 ==========');
+        console.log('messageId:', messageId);
+        console.log('mesText元素存在:', !!mesText);
+        if (mesText) {
+          console.log('innerHTML长度:', mesText.innerHTML?.length);
+          console.log('innerHTML前500字符:', mesText.innerHTML?.substring(0, 500));
+          console.log('textContent长度:', mesText.textContent?.length);
+          console.log('textContent前200字符:', mesText.textContent?.substring(0, 200));
+          console.log('子元素数量:', mesText.children?.length);
+          console.log('第一个子元素:', mesText.children?.[0]?.tagName);
+        }
+        console.log('chat[messageId].mes长度:', chat[messageId]?.mes?.length);
+        console.log('chat[messageId].mes前200字符:', chat[messageId]?.mes?.substring(0, 200));
+        console.log('============================================');
+        // ========== 日志结束 ==========
         
         if (mesText) {
           const html = mesText.innerHTML;
@@ -2735,4 +2752,5 @@ log('- mpDebug.syncLog() 查看同步日志汇总');
 log('- mpDebug.eventInterceptor() 查看事件拦截器状态');
 log('- mpDebug.testCapture() 测试最后一条消息的DOM');
 log('- mpDebug.testInterceptor() 手动测试事件拦截');
+
 log('- mpDebug.restoreRemote() 手动恢复远程消息');
