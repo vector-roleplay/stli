@@ -302,6 +302,47 @@ function getMessageTimeStamp() {
   }
   return new Date().toLocaleString();
 }
+// ========================================
+// 劫持 updateMessageBlock（保护远程消息）
+// ========================================
+
+function hijackUpdateMessageBlock() {
+  const ctx = getContext();
+  const original = ctx.updateMessageBlock;
+  
+  if (!original) {
+    log('警告：找不到 updateMessageBlock');
+    return;
+  }
+  
+  if (ctx._updateMessageBlockHijacked) {
+    log('updateMessageBlock 已劫持，跳过');
+    return;
+  }
+  
+  ctx.updateMessageBlock = function(messageId, message, options = {}) {
+    const result = original.call(this, messageId, message, options);
+    
+    // 检查是否是远程消息
+    const chat = getChat();
+    const msg = chat[messageId];
+    
+    if (msg?.extra?.isRemote && msg?.extra?.remoteFormattedHtml) {
+      setTimeout(() => {
+        const element = document.querySelector(`.mes[mesid="${messageId}"] .mes_text`);
+        if (element) {
+          element.innerHTML = msg.extra.remoteFormattedHtml;
+          log('updateMessageBlock 后恢复远程消息: #' + messageId);
+        }
+      }, 10);
+    }
+    
+    return result;
+  };
+  
+  ctx._updateMessageBlockHijacked = true;
+  log('✅ 已劫持 updateMessageBlock');
+}
 
 // ========================================
 // 事件拦截器（核心 - 在酒馆助手之前捕获）
@@ -492,7 +533,14 @@ function protectRemoteMessage(messageId) {
     
     remoteMessageObservers.set(messageId, observer);
     log('已设置远程消息保护: #' + messageId);
-  }, 2000);
+    
+    // ⭐ 立即检查一次，处理已经被破坏的情况
+const currentHtml = element.innerHTML;
+if (currentHtml.includes('[远程消息]') || currentHtml.length < 100) {
+  log('保护器：DOM已被破坏，立即恢复 #' + messageId);
+  element.innerHTML = remoteHtml;
+}
+  }, 200);
 }
 
 function clearRemoteMessageProtection(messageId) {
@@ -1742,6 +1790,7 @@ function handleMessage(msg) {
 function setupEventListeners() {
   const ctx = getContext();
   
+  hijackUpdateMessageBlock();
   setupEventInterceptor();
   setupDOMObserver();
   
@@ -2786,4 +2835,5 @@ log('- mpDebug.testInterceptor() 手动测试事件拦截');
 log('- mpDebug.testProtector(id) 测试保护器状态');
 
 log('- mpDebug.restoreRemote() 手动恢复远程消息');
+
 
