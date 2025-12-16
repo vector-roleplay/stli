@@ -401,48 +401,82 @@ function setupDOMObserver() {
 }
 
 // ========================================
-// 远程消息保护器
+// 远程消息保护器（智能版）
 // ========================================
 
-function protectRemoteMessage(messageId, correctHtml) {
+function protectRemoteMessage(messageId) {
   // 清理已有的 observer
   if (remoteMessageObservers.has(messageId)) {
     remoteMessageObservers.get(messageId).disconnect();
     remoteMessageObservers.delete(messageId);
   }
   
-  // 延迟启动，等待酒馆助手处理完成
-  setTimeout(function() {
-    const element = document.querySelector(`.mes[mesid="${messageId}"] .mes_text`);
-    if (!element) return;
+  const element = document.querySelector(`.mes[mesid="${messageId}"] .mes_text`);
+  if (!element) {
+    log('保护器: 找不到DOM元素，消息#' + messageId);
+    return;
+  }
+  
+  // 从 chat 数组获取纯净 HTML
+  const chat = getChat();
+  const msg = chat[messageId];
+  
+  // 双重确认：必须是远程消息
+  if (!msg?.extra?.isRemote) {
+    log('保护器: 消息#' + messageId + ' 不是远程消息，跳过');
+    return;
+  }
+  
+  // 必须有纯净 HTML
+  const pureHtml = msg?.extra?.remoteFormattedHtml;
+  if (!pureHtml) {
+    log('保护器: 消息#' + messageId + ' 没有纯净HTML，跳过');
+    return;
+  }
+  
+  let isRestoring = false;
+  
+  const observer = new MutationObserver(function() {
+    if (isRestoring) return;
     
-    // 获取酒馆助手处理后的最终状态
-    const finalHtml = element.innerHTML;
+    const currentHtml = element.innerHTML;
     
-    let isRestoring = false;
+    // 检查是否是合法状态
+    const hasPreCode = currentHtml.includes('<pre') && currentHtml.includes('<code');
+    const hasTHRender = currentHtml.includes('TH-render');
+    const hasIframe = currentHtml.includes('<iframe');
     
-    const observer = new MutationObserver(function() {
-      if (isRestoring) return;
+    // 合法状态：有原始的 <pre><code>，或者酒馆助手已处理（TH-render/iframe）
+    const isValidState = hasPreCode || hasTHRender || hasIframe;
+    
+    if (!isValidState) {
+      // 被非法覆盖了！恢复纯净 HTML
+      log('保护器: 检测到非法覆盖，恢复纯净HTML，消息#' + messageId);
       
-      log('检测到远程消息被篡改，恢复: #' + messageId);
+      logDebug('保护器触发', {
+        '消息ID': messageId,
+        '当前内容前50字': currentHtml.substring(0, 50),
+        '恢复HTML长度': pureHtml.length
+      });
       
       isRestoring = true;
-      element.innerHTML = finalHtml;
+      element.innerHTML = pureHtml;
       
       setTimeout(function() {
         isRestoring = false;
       }, 100);
-    });
-    
-    observer.observe(element, { 
-      childList: true, 
-      subtree: true, 
-      characterData: true 
-    });
-    
-    remoteMessageObservers.set(messageId, observer);
-    log('已设置远程消息保护: #' + messageId);
-  }, 2000);
+    }
+    // 如果是合法状态，不做任何处理
+  });
+  
+  observer.observe(element, { 
+    childList: true, 
+    subtree: true, 
+    characterData: true 
+  });
+  
+  remoteMessageObservers.set(messageId, observer);
+  log('已设置智能保护器: #' + messageId);
 }
 
 function clearRemoteMessageProtection(messageId) {
@@ -1174,7 +1208,7 @@ function handleRemoteAiComplete(msg) {
     }, 100);
     
     // 设置保护器（延迟，等酒馆助手处理完）
-    protectRemoteMessage(messageId, msg.formattedHtml);
+    protectRemoteMessage(messageId);
     
     setTimeout(() => addRemoteTag(messageId, '联机AI', 'ai'), 200);
     
@@ -1233,7 +1267,7 @@ function handleRemoteAiComplete(msg) {
     }, 150);
     
     // 设置保护器
-    protectRemoteMessage(messageId, msg.formattedHtml);
+    protectRemoteMessage(messageId);
     
     setTimeout(() => addRemoteTag(messageId, '联机AI', 'ai'), 250);
     
@@ -1264,7 +1298,7 @@ function restoreRemoteMessages() {
       if (mesText.length) {
         mesText.html(msg.extra.remoteFormattedHtml);
         
-        protectRemoteMessage(messageId, msg.extra.remoteFormattedHtml);
+        protectRemoteMessage(messageId);
         
         addRemoteTag(messageId, '联机AI', 'ai');
         
@@ -2627,4 +2661,5 @@ log('- mpDebug.state() 查看联机状态');
 log('- mpDebug.syncLog() 查看同步日志汇总');
 log('- mpDebug.domCapture() 查看DOM劫持状态');
 log('- mpDebug.testCapture() 测试最后一条消息的DOM');
+
 log('- mpDebug.restoreRemote() 手动恢复远程消息');
