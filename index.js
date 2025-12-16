@@ -966,7 +966,7 @@ function handleRemoteAiStream(msg) {
 function handleRemoteAiComplete(msg) {
   const chat = getChat();
   const ctx = getContext();
-  const streamInfo = remoteStreamMap.get(msg.senderId)
+  const streamInfo = remoteStreamMap.get(msg.senderId);
 
   // ===== 调试：检查接收到的HTML是否完整 =====
   log('远程AI完成，接收到的HTML长度: ' + (msg.formattedHtml?.length || 0));
@@ -2402,5 +2402,6 @@ log('  - mpDebug.state() 查看联机状态');
 log('  - mpDebug.syncLog() 查看同步日志汇总');
 
 log('  - mpDebug.restoreRemote() 手动恢复远程消息');
+
 
 
