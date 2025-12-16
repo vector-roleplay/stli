@@ -1434,15 +1434,16 @@ function handleMessage(msg) {
 function setupEventListeners() {
   const ctx = getContext();
   
-  // ========== 劫持 messageFormatting ==========
-  const originalMessageFormatting = ctx.messageFormatting;
-  let capturedHtml = null;
-  let capturedMessageId = null;
+
+     // ========== 劫持 messageFormatting ==========
+const originalMessageFormatting = ctx.messageFormatting.bind(ctx);
+let capturedHtml = null;
+let capturedMessageId = null;
+
+ctx.messageFormatting = function(mes, ch_name, isSystem, isUser, messageId, sanitizerOverrides, isReasoning) {
+  // 调用原函数
+  const result = originalMessageFormatting(mes, ch_name, isSystem, isUser, messageId, sanitizerOverrides, isReasoning);
   
-  ctx.messageFormatting = function(mes, ch_name, isSystem, isUser, messageId, sanitizerOverrides, isReasoning) {
-    // 调用原函数
-    const result = originalMessageFormatting.call(this, mes, ch_name, isSystem, isUser, messageId, sanitizerOverrides, isReasoning);
-    
     // 判断是否需要捕获
     if (currentRoom && 
         turnState.isMyTurn && 
@@ -2396,5 +2397,6 @@ window.mpDebug = {
   get worldInfoCache() { return remoteWorldInfoCache; },
   get messageObservers() { return remoteMessageObservers; }
 };
+
 
 
