@@ -1048,28 +1048,110 @@ function simpleRender(text) {
 // ========================================
 // 清理 HTML 用于远程同步
 // ========================================
-
 function cleanHtmlForSync(html) {
   const temp = document.createElement('div');
   temp.innerHTML = html;
   
+  // 1. 处理 TH-render 包装器，还原原始 <pre>
   const renders = temp.querySelectorAll('.TH-render');
   renders.forEach(function(render) {
     const pre = render.querySelector('pre');
     if (pre) {
+      // 移除 hidden! class
       pre.classList.remove('hidden!');
+      // 用 pre 替换整个 TH-render
       render.replaceWith(pre);
+    } else {
+      // 如果没有 pre，直接移除整个 TH-render
+      render.remove();
     }
   });
   
+  // 2. 移除所有 iframe
   const iframes = temp.querySelectorAll('iframe');
   iframes.forEach(function(iframe) {
     iframe.remove();
   });
   
+  // 3. 移除折叠按钮
   const buttons = temp.querySelectorAll('.TH-collapse-code-block-button');
   buttons.forEach(function(btn) {
     btn.remove();
+  });
+  
+  // 4. 移除所有酒馆助手相关的元素
+  const thElements = temp.querySelectorAll('[class*="TH-"], [class*="th-"]');
+  thElements.forEach(function(el) {
+    el.remove();
+  });
+  
+  // 5. 清理所有元素的 hidden! class
+  const hiddenElements = temp.querySelectorAll('.hidden\\!');
+  hiddenElements.forEach(function(el) {
+    el.classList.remove('hidden!');
+  });
+  
+  // 6. 移除所有 blob URL（src、href 等属性）
+  const allElements = temp.querySelectorAll('*');
+  allElements.forEach(function(el) {
+    // 清理 src 属性中的 blob URL
+    if (el.hasAttribute('src')) {
+      const src = el.getAttribute('src');
+      if (src && (src.startsWith('blob:') || src.includes('://localhost') || src.includes('://127.0.0.1') || src.includes('://192.168.'))) {
+        el.removeAttribute('src');
+      }
+    }
+    
+    // 清理 href 属性中的 blob URL
+    if (el.hasAttribute('href')) {
+      const href = el.getAttribute('href');
+      if (href && (href.startsWith('blob:') || href.includes('://localhost') || href.includes('://127.0.0.1') || href.includes('://192.168.'))) {
+        el.removeAttribute('href');
+      }
+    }
+    
+    // 清理 data 属性中的 blob URL
+    if (el.hasAttribute('data')) {
+      const data = el.getAttribute('data');
+      if (data && (data.startsWith('blob:') || data.includes('://localhost') || data.includes('://127.0.0.1') || data.includes('://192.168.'))) {
+        el.removeAttribute('data');
+      }
+    }
+    
+    // 移除所有 data-* 属性（酒馆助手可能添加的）
+    const attrs = Array.from(el.attributes);
+    attrs.forEach(function(attr) {
+      if (attr.name.startsWith('data-')) {
+        el.removeAttribute(attr.name);
+      }
+    });
+  });
+  
+  // 7. 移除 <base> 标签
+  const baseTags = temp.querySelectorAll('base');
+  baseTags.forEach(function(base) {
+    base.remove();
+  });
+  
+  // 8. 移除 <object> 和 <embed> 标签（可能包含外部资源）
+  const objectTags = temp.querySelectorAll('object, embed');
+  objectTags.forEach(function(obj) {
+    obj.remove();
+  });
+  
+  // 9. 清理 style 属性中可能包含的 URL
+  allElements.forEach(function(el) {
+    if (el.hasAttribute('style')) {
+      let style = el.getAttribute('style');
+      // 移除 url() 中包含 blob: 或本地地址的内容
+      style = style.replace(/url\s*\(\s*["']?blob:[^)]+["']?\s*\)/gi, '');
+      style = style.replace(/url\s*\(\s*["']?https?:\/\/(localhost|127\.0\.0\.1|192\.168\.[^)]+)["']?\s*\)/gi, '');
+      if (style.trim()) {
+        el.setAttribute('style', style);
+      } else {
+        el.removeAttribute('style');
+      }
+    }
   });
   
   return temp.innerHTML;
@@ -2715,4 +2797,5 @@ log('- mpDebug.eventInterceptor() 查看事件拦截器状态');
 log('- mpDebug.testCapture() 测试最后一条消息的DOM');
 log('- mpDebug.testInterceptor() 手动测试事件拦截');
 log('- mpDebug.testProtector(id) 测试保护器状态');
+
 log('- mpDebug.restoreRemote() 手动恢复远程消息');
