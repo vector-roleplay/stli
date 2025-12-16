@@ -321,6 +321,34 @@ function setupEventInterceptor() {
   
   // 劫持 emit
   ctx.eventSource.emit = async function(eventType, ...args) {
+
+    // ========== 新增调试日志 ==========
+    if (eventType === 'message_received') {
+      const messageId = args[0];
+      const chat = getChat();
+      console.log('=== 第一声 MESSAGE_RECEIVED ===');
+      console.log('消息ID:', messageId);
+      console.log('chat[].mes 长度:', chat[messageId]?.mes?.length);
+      console.log('chat[].mes 前100字符:', chat[messageId]?.mes?.substring(0, 100));
+      const mesText = document.querySelector(`.mes[mesid="${messageId}"] .mes_text`);
+      console.log('DOM innerHTML 长度:', mesText?.innerHTML?.length);
+      console.log('DOM innerHTML 前100字符:', mesText?.innerHTML?.substring(0, 100));
+      console.log('================================');
+    }
+    
+    if (eventType === 'character_message_rendered') {
+      const messageId = args[0];
+      const chat = getChat();
+      console.log('=== 第二声 CHARACTER_MESSAGE_RENDERED ===');
+      console.log('消息ID:', messageId);
+      console.log('chat[].mes 长度:', chat[messageId]?.mes?.length);
+      console.log('chat[].mes 前100字符:', chat[messageId]?.mes?.substring(0, 100));
+      const mesText = document.querySelector(`.mes[mesid="${messageId}"] .mes_text`);
+      console.log('DOM innerHTML 长度:', mesText?.innerHTML?.length);
+      console.log('DOM innerHTML 前100字符:', mesText?.innerHTML?.substring(0, 100));
+      console.log('=========================================');
+    }
+    // ========== 调试日志结束 ==========
     
     // 拦截 CHARACTER_MESSAGE_RENDERED 事件
     if (eventType === ctx.eventTypes.CHARACTER_MESSAGE_RENDERED) {
@@ -2754,3 +2782,4 @@ log('- mpDebug.testCapture() 测试最后一条消息的DOM');
 log('- mpDebug.testInterceptor() 手动测试事件拦截');
 
 log('- mpDebug.restoreRemote() 手动恢复远程消息');
+
