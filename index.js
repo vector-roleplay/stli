@@ -1835,93 +1835,80 @@ function setupEventListeners() {
   });
   
   eventSource.on(event_types.GENERATION_ENDED, function(messageCount) {
-    if (!currentRoom) return;
+  if (!currentRoom) return;
+  
+  clearInjectedExtensionPrompt();
+  
+  if (!turnState.isMyTurn || !isGenerating) return;
+  
+  clearRemoteWorldInfoCache();
+  
+  log('事件: 生成结束，等待酒馆助手处理...');
+  
+  // ⭐ 延迟500ms，等酒馆助手处理完
+  setTimeout(function() {
+    isGenerating = false;
+    capturedHtml = null;
+    capturedMessageId = null;
     
-    clearInjectedExtensionPrompt();
+    const chat = getChat();
+    const messageId = chat.length - 1;
+    const lastMsg = chat[messageId];
     
-    if (!turnState.isMyTurn || !isGenerating) return;
+    if (!lastMsg || lastMsg.is_user || lastMsg.extra?.isRemote) {
+      log('跳过：不是本地AI消息');
+      return;
+    }
     
-    clearRemoteWorldInfoCache();
+    const mesText = document.querySelector(`.mes[mesid="${messageId}"] .mes_text`);
+    if (!mesText) {
+      log('找不到消息DOM');
+      return;
+    }
     
-    log('事件: 生成结束');
+    let html = mesText.innerHTML;
     
-    setTimeout(function() {
-      isGenerating = false;
-      
-      if (capturedHtml && capturedMessageId !== null) {
-        const chat = getChat();
-        const msg = chat[capturedMessageId];
-        
-        if (msg && !msg.is_user && !msg.extra?.isRemote) {
-          logDebug('📤 发送捕获的HTML', {
-            '消息ID': capturedMessageId,
-            'HTML长度': capturedHtml.length,
-            '前100字符': capturedHtml.substring(0, 100),
-            '包含pre': capturedHtml.includes('<pre') ? '✅' : '❌',
-            '包含TH-render': capturedHtml.includes('TH-render') ? '❌问题' : '✅干净',
-            '包含iframe': capturedHtml.includes('<iframe') ? '❌问题' : '✅干净'
-          });
-          
-          logSync('发送AI消息 (事件拦截)', {
-            角色名: msg.name,
-            HTML长度: capturedHtml.length,
-            状态: capturedHtml.includes('TH-render') ? '已清理' : '干净'
-          });
-          
-          sendWS({
-            type: 'syncAiComplete',
-            formattedHtml: capturedHtml,
-            charName: msg.name,
-            senderName: userName,
-            timestamp: Date.now()
-          });
-          
-          sendWS({ type: 'aiGenerationEnded' });
-          
-          log('✅ 已发送格式化HTML，长度: ' + capturedHtml.length);
-        }
-      } else {
-        log('⚠️ 未捕获到HTML，尝试备用方案');
-        
-        const chat = getChat();
-        const lastMsg = chat[chat.length - 1];
-        
-        if (lastMsg && !lastMsg.is_user && !lastMsg.extra?.isRemote) {
-          const messageId = chat.length - 1;
-          const mesText = document.querySelector(`.mes[mesid="${messageId}"] .mes_text`);
-          
-          if (mesText) {
-            let html = mesText.innerHTML;
-            
-            if (html.includes('TH-render') || html.includes('<iframe')) {
-              html = cleanHtmlForSync(html);
-              log('备用方案: 已清理HTML');
-            }
-            
-            logDebug('📤 备用方案发送', {
-              '消息ID': messageId,
-              'HTML长度': html.length,
-              '前100字符': html.substring(0, 100)
-            });
-            
-            sendWS({
-              type: 'syncAiComplete',
-              formattedHtml: html,
-              charName: lastMsg.name,
-              senderName: userName,
-              timestamp: Date.now()
-            });
-            
-            sendWS({ type: 'aiGenerationEnded' });
-          }
-        }
-      }
-      
-      capturedHtml = null;
-      capturedMessageId = null;
-      
-    }, 50);
-  });
+    logDebug('📤 捕获时的DOM状态', {
+      '消息ID': messageId,
+      'HTML长度': html.length,
+      '前200字符': html.substring(0, 200),
+      '包含TH-render': html.includes('TH-render') ? '是' : '否',
+      '包含iframe': html.includes('<iframe') ? '是' : '否'
+    });
+    
+    // ⭐ 清理酒馆助手添加的内容
+    html = cleanHtmlForSync(html);
+    
+    logDebug('📤 清理后的HTML', {
+      'HTML长度': html.length,
+      '前200字符': html.substring(0, 200)
+    });
+    
+    // 检查是否是占位符
+    if (html.length < 20 || html === '<p>…</p>') {
+      log('⚠️ 内容太短，可能是占位符，跳过发送');
+      return;
+    }
+    
+    logSync('发送AI消息', {
+      角色名: lastMsg.name,
+      HTML长度: html.length
+    });
+    
+    sendWS({
+      type: 'syncAiComplete',
+      formattedHtml: html,
+      charName: lastMsg.name,
+      senderName: userName,
+      timestamp: Date.now()
+    });
+    
+    sendWS({ type: 'aiGenerationEnded' });
+    
+    log('✅ 已发送格式化HTML，长度: ' + html.length);
+    
+  }, 500);  // ⭐ 等待500ms
+});
   
   eventSource.on(event_types.GENERATION_STOPPED, function() {
     log('事件: 生成停止');
@@ -2799,3 +2786,4 @@ log('- mpDebug.testInterceptor() 手动测试事件拦截');
 log('- mpDebug.testProtector(id) 测试保护器状态');
 
 log('- mpDebug.restoreRemote() 手动恢复远程消息');
+
