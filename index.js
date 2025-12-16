@@ -2397,9 +2397,3 @@ window.mpDebug = {
   get messageObservers() { return remoteMessageObservers; }
 };
 
-
-log('调试命令已注册: window.mpDebug');
-log('- mpDebug.state() 查看联机状态');
-log('- mpDebug.syncLog() 查看同步日志汇总');
-log('- mpDebug.restoreRemote() 手动恢复远程消息');
-
