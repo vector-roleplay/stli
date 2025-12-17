@@ -1,5 +1,5 @@
 // ========================================
-// 酒馆联机扩展 v2.7
+// 酒馆联机扩展 v2.7.4
 // 服务器: wss://chu.zeabur.app
 // 核心改动: 
 //   - 添加全方位追踪系统
@@ -15,7 +15,7 @@ const extensionName = 'stli';
 const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
 
 // ========== 版本信息 ==========
-const CURRENT_VERSION = '2.7.0';
+const CURRENT_VERSION = '2.7.4';
 
 const defaultSettings = {
   serverUrl: 'wss://chu.zeabur.app',
