@@ -15,7 +15,7 @@ import { extension_settings, getContext } from '../../../extensions.js';
 const extensionName = 'stli';
 const extensionFolderPath = 'scripts/extensions/third-party/' + extensionName;
 // ========== 版本信息 ==========
-const CURRENT_VERSION = '2.7.1';
+const CURRENT_VERSION = '2.7.2';
 
 const defaultSettings = {
   serverUrl: 'wss://chu.zeabur.app',
@@ -765,7 +765,7 @@ function protectRemoteMessage(messageId) {
       log('保护器：DOM已被破坏，立即恢复 #' + messageId);
       element.innerHTML = remoteHtml;
     }
-  }, 1500);
+  }, 5000);
 }
 
 function clearRemoteMessageProtection(messageId) {
@@ -2658,6 +2658,7 @@ log('- mpDebug.showRemoteCache() 查看远程上下文缓存');
 log('- mpDebug.clearRemoteCache() 清除远程上下文缓存');
 
 log('- mpDebug.restoreRemote() 手动恢复远程消息');
+
 
 
 
