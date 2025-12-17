@@ -13,8 +13,7 @@ import { extension_settings, getContext } from '../../../extensions.js';
 
 // ========== 扩展配置 ==========
 const extensionName = 'stli';
-const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
-
+const extensionFolderPath = 'scripts/extensions/third-party/' + extensionName;
 // ========== 版本信息 ==========
 const CURRENT_VERSION = '2.7.0';
 
@@ -2659,4 +2658,5 @@ log('- mpDebug.showRemoteCache() 查看远程上下文缓存');
 log('- mpDebug.clearRemoteCache() 清除远程上下文缓存');
 
 log('- mpDebug.restoreRemote() 手动恢复远程消息');
+
 
