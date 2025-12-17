@@ -1,4 +1,3 @@
-```javascript
 // ========================================
 // 酒馆联机扩展 v2.7
 // 服务器: wss://chu.zeabur.app
@@ -2660,3 +2659,4 @@ log('- mpDebug.showRemoteCache() 查看远程上下文缓存');
 log('- mpDebug.clearRemoteCache() 清除远程上下文缓存');
 
 log('- mpDebug.restoreRemote() 手动恢复远程消息');
+
