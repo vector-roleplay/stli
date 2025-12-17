@@ -158,74 +158,74 @@ const TraceSystem = {
   // ========== 工具函数 ==========
   
   // 解析调用栈
-  parseStack: function(stack) {
-    if (!stack) return [];
+parseStack: function(stack) {
+  if (!stack) return [];
+  
+  const lines = stack.split('\n');
+  const result = [];
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line || line === 'Error') continue;
     
-    const lines = stack.split('\n');
-    const result = [];
-    
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (!line || line === 'Error') continue;
-      
-      // 匹配格式: "at functionName (file:line:column)"
-      // 或: "at file:line:column"
-      // 或: "at functionName (native code)"
-      
-      let match = line.match(/at\s+(.+?)\s+$(.+?):(\d+):(\d+)$/);
-      if (match) {
-        result.push({
-          function: match[1],
-          file: this.extractFileName(match[2]),
-          fullPath: match[2],
-          line: parseInt(match[3]),
-          column: parseInt(match[4]),
-          raw: line
-        });
-        continue;
-      }
-      
-      match = line.match(/at\s+(.+?):(\d+):(\d+)/);
-      if (match) {
-        result.push({
-          function: '(anonymous)',
-          file: this.extractFileName(match[1]),
-          fullPath: match[1],
-          line: parseInt(match[2]),
-          column: parseInt(match[3]),
-          raw: line
-        });
-        continue;
-      }
-      
-      match = line.match(/at\s+(.+?)\s+$(.+?)$/);
-      if (match) {
-        result.push({
-          function: match[1],
-          file: match[2],
-          fullPath: match[2],
-          line: null,
-          column: null,
-          raw: line
-        });
-        continue;
-      }
-      
-      match = line.match(/at\s+(.+)/);
-      if (match) {
-        result.push({
-          function: match[1],
-          file: 'unknown',
-          fullPath: 'unknown',
-          line: null,
-          column: null,
-          raw: line
-        });
-      }
+    // 匹配格式: "at functionName (file:line:column)"
+    let match = line.match(/at\s+(.+?)\s+\((.+?):(\d+):(\d+)\)/);
+    if (match) {
+      result.push({
+        function: match[1],
+        file: this.extractFileName(match[2]),
+        fullPath: match[2],
+        line: parseInt(match[3]),
+        column: parseInt(match[4]),
+        raw: line
+      });
+      continue;
     }
     
-    return result;
-  },
+    // 匹配格式: "at file:line:column"
+    match = line.match(/at\s+(.+?):(\d+):(\d+)/);
+    if (match) {
+      result.push({
+        function: '(anonymous)',
+        file: this.extractFileName(match[1]),
+        fullPath: match[1],
+        line: parseInt(match[2]),
+        column: parseInt(match[3]),
+        raw: line
+      });
+      continue;
+    }
+    
+    // 匹配格式: "at functionName (native code)" 或 "at functionName (file)"
+    match = line.match(/at\s+(.+?)\s+\((.+?)\)/);
+    if (match) {
+      result.push({
+        function: match[1],
+        file: match[2],
+        fullPath: match[2],
+        line: null,
+        column: null,
+        raw: line
+      });
+      continue;
+    }
+    
+    // 匹配格式: "at functionName"
+    match = line.match(/at\s+(.+)/);
+    if (match) {
+      result.push({
+        function: match[1],
+        file: 'unknown',
+        fullPath: 'unknown',
+        line: null,
+        column: null,
+        raw: line
+      });
+    }
+  }
+  
+  return result;
+},
   
   // 从路径提取文件名
   extractFileName: function(path) {
@@ -2301,18 +2301,18 @@ function cleanHtmlForSync(html) {
   });
   
   // 9. 清理 style 属性中可能包含的 URL
-  allElements.forEach(function(el) {
-    if (el.hasAttribute('style')) {
-      let style = el.getAttribute('style');
-      style = style.replace(/url\s*$\s*["']?blob:[^)]+["']?\s*$/gi, '');
-      style = style.replace(/url\s*$\s*["']?https?:\/\/(localhost|127\.0\.0\.1|192\.168\.[^)]+)["']?\s*$/gi, '');
-      if (style.trim()) {
-        el.setAttribute('style', style);
-      } else {
-        el.removeAttribute('style');
-      }
+allElements.forEach(function(el) {
+  if (el.hasAttribute('style')) {
+    let style = el.getAttribute('style');
+    style = style.replace(/url\s*\(\s*["']?blob:[^)]+["']?\s*\)/gi, '');
+    style = style.replace(/url\s*\(\s*["']?https?:\/\/(localhost|127\.0\.0\.1|192\.168\.[^)]+)["']?\s*\)/gi, '');
+    if (style.trim()) {
+      el.setAttribute('style', style);
+    } else {
+      el.removeAttribute('style');
     }
-  });
+  }
+});
   
   return temp.innerHTML;
 }
