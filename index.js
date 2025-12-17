@@ -1,10 +1,10 @@
 // ========================================
-// 酒馆联机扩展 v2.6
+// 酒馆联机扩展 v2.7
 // 服务器: wss://chu.zeabur.app
 // 核心改动: 
-//   - 发送方在updateMessageBlock后立即捕获
-//   - 接收方保护远程消息不被污染
-//   - 轮询等待捕获完成后再发送
+//   - 添加全方位追踪系统
+//   - 劫持所有DOM修改API
+//   - 追踪未知函数的调用栈
 // ========================================
 
 import { eventSource, event_types } from '../../../../script.js';
@@ -15,7 +15,7 @@ const extensionName = 'stli';
 const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
 
 // ========== 版本信息 ==========
-const CURRENT_VERSION = '2.6.0';
+const CURRENT_VERSION = '2.7.0';
 
 const defaultSettings = {
   serverUrl: 'wss://chu.zeabur.app',
@@ -92,6 +92,1268 @@ const remoteMessageObservers = new Map();
 
 // ========== 远程上下文缓存 ==========
 let remoteContextCache = new Map();
+
+// ========================================
+// 🕵️ 全方位追踪系统
+// ========================================
+
+const TraceSystem = {
+  // 配置
+  enabled: false,
+  installed: false,
+  
+  // 存储原始函数引用
+  originals: {
+    // 原生 DOM API
+    innerHTMLSetter: null,
+    outerHTMLSetter: null,
+    textContentSetter: null,
+    appendChild: null,
+    insertBefore: null,
+    replaceChild: null,
+    removeChild: null,
+    append: null,
+    prepend: null,
+    replaceWith: null,
+    replaceChildren: null,
+    insertAdjacentHTML: null,
+    
+    // jQuery
+    jQueryHtml: null,
+    jQueryText: null,
+    jQueryAppend: null,
+    jQueryPrepend: null,
+    jQueryAfter: null,
+    jQueryBefore: null,
+    jQueryReplaceWith: null,
+    jQueryEmpty: null,
+    
+    // 事件系统
+    eventSourceEmit: null,
+    
+    // 酒馆函数
+    messageFormatting: null,
+    updateMessageBlock: null,
+    addOneMessage: null,
+  },
+  
+  // 追踪日志
+  logs: [],
+  maxLogs: 500,
+  
+  // 追踪的远程消息ID集合
+  trackedMessageIds: new Set(),
+  
+  // 快照存储
+  snapshots: new Map(),
+  
+  // 统计
+  stats: {
+    totalModifications: 0,
+    byMethod: {},
+    byFile: {},
+    corruptions: 0,
+  },
+  
+  // ========== 工具函数 ==========
+  
+  // 解析调用栈
+  parseStack: function(stack) {
+    if (!stack) return [];
+    
+    const lines = stack.split('\n');
+    const result = [];
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line || line === 'Error') continue;
+      
+      // 匹配格式: "at functionName (file:line:column)"
+      // 或: "at file:line:column"
+      // 或: "at functionName (native code)"
+      
+      let match = line.match(/at\s+(.+?)\s+$(.+?):(\d+):(\d+)$/);
+      if (match) {
+        result.push({
+          function: match[1],
+          file: this.extractFileName(match[2]),
+          fullPath: match[2],
+          line: parseInt(match[3]),
+          column: parseInt(match[4]),
+          raw: line
+        });
+        continue;
+      }
+      
+      match = line.match(/at\s+(.+?):(\d+):(\d+)/);
+      if (match) {
+        result.push({
+          function: '(anonymous)',
+          file: this.extractFileName(match[1]),
+          fullPath: match[1],
+          line: parseInt(match[2]),
+          column: parseInt(match[3]),
+          raw: line
+        });
+        continue;
+      }
+      
+      match = line.match(/at\s+(.+?)\s+$(.+?)$/);
+      if (match) {
+        result.push({
+          function: match[1],
+          file: match[2],
+          fullPath: match[2],
+          line: null,
+          column: null,
+          raw: line
+        });
+        continue;
+      }
+      
+      match = line.match(/at\s+(.+)/);
+      if (match) {
+        result.push({
+          function: match[1],
+          file: 'unknown',
+          fullPath: 'unknown',
+          line: null,
+          column: null,
+          raw: line
+        });
+      }
+    }
+    
+    return result;
+  },
+  
+  // 从路径提取文件名
+  extractFileName: function(path) {
+    if (!path) return 'unknown';
+    
+    // 移除查询参数
+    path = path.split('?')[0];
+    
+    // 提取最后的文件名
+    const parts = path.split('/');
+    return parts[parts.length - 1] || path;
+  },
+  
+  // 检查元素是否是我们追踪的远程消息
+  isTrackedElement: function(element) {
+    if (!element || !element.closest) return false;
+    
+    const mesElement = element.closest('.mes[data-remote="true"]');
+    if (!mesElement) return false;
+    
+    // 检查是否是 .mes_text 或其子元素
+    const mesText = mesElement.querySelector('.mes_text');
+    if (!mesText) return false;
+    
+    return element === mesText || mesText.contains(element);
+  },
+  
+  // 获取元素所属的消息ID
+  getMessageId: function(element) {
+    if (!element || !element.closest) return null;
+    const mesElement = element.closest('.mes');
+    if (!mesElement) return null;
+    return parseInt(mesElement.getAttribute('mesid'));
+  },
+  
+  // 创建快照
+  createSnapshot: function(element) {
+    if (!element) return null;
+    return {
+      innerHTML: element.innerHTML,
+      textContent: element.textContent,
+      length: element.innerHTML?.length || 0,
+      timestamp: Date.now()
+    };
+  },
+  
+  // 格式化时间
+  formatTime: function(timestamp) {
+    const date = new Date(timestamp);
+    return date.toLocaleTimeString('zh-CN', { 
+      hour12: false, 
+      hour: '2-digit', 
+      minute: '2-digit', 
+      second: '2-digit',
+      fractionalSecondDigits: 3
+    });
+  },
+  
+  // 记录日志
+  log: function(entry) {
+    // 添加序号和时间
+    entry.seq = this.logs.length + 1;
+    entry.time = Date.now();
+    entry.timeReadable = this.formatTime(entry.time);
+    
+    // 解析调用栈
+    if (entry.stack) {
+      entry.callChain = this.parseStack(entry.stack);
+      
+      // 找出关键调用者（跳过我们自己的代码和原生代码）
+      const dominated = ['innerHTML setter', 'outerHTML setter', 'appendChild wrapper', 
+                        'insertBefore wrapper', 'jQuery.html wrapper', 'traceSystem'];
+      
+      for (const call of entry.callChain) {
+        if (!dominated.some(d => call.function?.includes(d)) && 
+            call.file !== 'unknown' && 
+            !call.file.includes('native code')) {
+          entry.triggerFunction = call.function;
+          entry.triggerFile = call.file;
+          entry.triggerLine = call.line;
+          break;
+        }
+      }
+    }
+    
+    // 判断是否是污染
+    if (entry.contentBefore && entry.contentAfter) {
+      const lenBefore = entry.contentBefore.length;
+      const lenAfter = entry.contentAfter.length;
+      
+      // 如果内容大幅缩短，可能是污染
+      if (lenBefore > 100 && lenAfter < lenBefore * 0.1) {
+        entry.isCorruption = true;
+        entry.severity = 'critical';
+        this.stats.corruptions++;
+      } else if (entry.contentAfter.includes('[远程消息]') || 
+                 entry.contentAfter.includes('<p>…</p>')) {
+        entry.isCorruption = true;
+        entry.severity = 'high';
+        this.stats.corruptions++;
+      }
+    }
+    
+    // 更新统计
+    this.stats.totalModifications++;
+    this.stats.byMethod[entry.method] = (this.stats.byMethod[entry.method] || 0) + 1;
+    if (entry.triggerFile) {
+      this.stats.byFile[entry.triggerFile] = (this.stats.byFile[entry.triggerFile] || 0) + 1;
+    }
+    
+    // 添加到日志
+    this.logs.push(entry);
+    
+    // 限制日志数量
+    if (this.logs.length > this.maxLogs) {
+      this.logs = this.logs.slice(-this.maxLogs);
+    }
+    
+    // 实时输出
+    this.printEntry(entry);
+    
+    return entry;
+  },
+  
+  // 打印单条日志
+  printEntry: function(entry) {
+    const prefix = entry.isCorruption ? '🔴' : '📝';
+    const severity = entry.isCorruption ? 'color: #ff4444; font-weight: bold;' : 'color: #4ade80;';
+    
+    console.groupCollapsed(
+      `%c${prefix} [追踪 #${entry.seq}] ${entry.method} @ ${entry.timeReadable} | 消息#${entry.messageId}`,
+      severity
+    );
+    
+    console.log('方法:', entry.method);
+    console.log('消息ID:', entry.messageId);
+    console.log('是否远程消息:', entry.isRemote);
+    
+    if (entry.triggerFunction) {
+      console.log('%c触发函数: ' + entry.triggerFunction, 'color: #f59e0b; font-weight: bold;');
+      console.log('%c触发文件: ' + entry.triggerFile + ':' + entry.triggerLine, 'color: #f59e0b;');
+    }
+    
+    if (entry.contentBefore !== undefined) {
+      console.log('内容变化:', entry.contentBefore?.length, '→', entry.contentAfter?.length);
+      if (entry.contentBefore?.length < 500) {
+        console.log('之前:', entry.contentBefore?.substring(0, 200));
+      }
+      if (entry.contentAfter?.length < 500) {
+        console.log('之后:', entry.contentAfter?.substring(0, 200));
+      }
+    }
+    
+    if (entry.isCorruption) {
+      console.log('%c⚠️ 检测到污染！严重程度: ' + entry.severity, 'color: #ff4444; font-weight: bold; font-size: 14px;');
+    }
+    
+    if (entry.callChain && entry.callChain.length > 0) {
+      console.groupCollapsed('调用栈 (' + entry.callChain.length + ' 层)');
+      entry.callChain.forEach((call, i) => {
+        const highlight = (call.function === entry.triggerFunction) ? 'background: #f59e0b; color: #000; padding: 2px 4px;' : '';
+        console.log(`%c#${i + 1} ${call.function} @ ${call.file}:${call.line}`, highlight);
+      });
+      console.groupEnd();
+    }
+    
+    console.groupEnd();
+  },
+  
+  // ========== 劫持函数 ==========
+  
+  // 安装追踪系统
+  install: function() {
+    if (this.installed) {
+      console.log('[追踪系统] 已安装，跳过');
+      return;
+    }
+    
+    console.log('%c[追踪系统] 开始安装...', 'color: #4ade80; font-weight: bold; font-size: 14px;');
+    
+    const self = this;
+    
+    // ========== 劫持原生 DOM API ==========
+    
+    // innerHTML setter
+    const innerHTMLDescriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
+    this.originals.innerHTMLSetter = innerHTMLDescriptor.set;
+    
+    Object.defineProperty(Element.prototype, 'innerHTML', {
+      set: function(value) {
+        const messageId = self.getMessageId(this);
+        const isRemote = this.closest?.('.mes[data-remote="true"]') !== null;
+        const isMesText = this.classList?.contains('mes_text');
+        
+        if (isRemote && isMesText && self.enabled) {
+          const before = this.innerHTML;
+          self.originals.innerHTMLSetter.call(this, value);
+          const after = this.innerHTML;
+          
+          self.log({
+            method: 'innerHTML',
+            messageId: messageId,
+            isRemote: true,
+            element: '.mes_text',
+            contentBefore: before,
+            contentAfter: after,
+            stack: new Error().stack
+          });
+        } else {
+          self.originals.innerHTMLSetter.call(this, value);
+        }
+      },
+      get: innerHTMLDescriptor.get,
+      configurable: true
+    });
+    
+    // outerHTML setter
+    const outerHTMLDescriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'outerHTML');
+    this.originals.outerHTMLSetter = outerHTMLDescriptor.set;
+    
+    Object.defineProperty(Element.prototype, 'outerHTML', {
+      set: function(value) {
+        const messageId = self.getMessageId(this);
+        const isRemote = this.closest?.('.mes[data-remote="true"]') !== null;
+        const isMesText = this.classList?.contains('mes_text');
+        
+        if (isRemote && isMesText && self.enabled) {
+          const before = this.outerHTML;
+          self.originals.outerHTMLSetter.call(this, value);
+          
+          self.log({
+            method: 'outerHTML',
+            messageId: messageId,
+            isRemote: true,
+            element: '.mes_text',
+            contentBefore: before,
+            contentAfter: value,
+            stack: new Error().stack
+          });
+        } else {
+          self.originals.outerHTMLSetter.call(this, value);
+        }
+      },
+      get: outerHTMLDescriptor.get,
+      configurable: true
+    });
+    
+    // textContent setter
+    const textContentDescriptor = Object.getOwnPropertyDescriptor(Node.prototype, 'textContent');
+    this.originals.textContentSetter = textContentDescriptor.set;
+    
+    Object.defineProperty(Node.prototype, 'textContent', {
+      set: function(value) {
+        const messageId = self.getMessageId(this);
+        const isRemote = this.closest?.('.mes[data-remote="true"]') !== null;
+        const isMesText = this.classList?.contains('mes_text');
+        
+        if (isRemote && isMesText && self.enabled) {
+          const before = this.textContent;
+          self.originals.textContentSetter.call(this, value);
+          
+          self.log({
+            method: 'textContent',
+            messageId: messageId,
+            isRemote: true,
+            element: '.mes_text',
+            contentBefore: before,
+            contentAfter: value,
+            stack: new Error().stack
+          });
+        } else {
+          self.originals.textContentSetter.call(this, value);
+        }
+      },
+      get: textContentDescriptor.get,
+      configurable: true
+    });
+    
+    // appendChild
+    this.originals.appendChild = Node.prototype.appendChild;
+    Node.prototype.appendChild = function(node) {
+      const messageId = self.getMessageId(this);
+      const isRemote = this.closest?.('.mes[data-remote="true"]') !== null;
+      const isMesText = this.classList?.contains('mes_text');
+      
+      if (isRemote && isMesText && self.enabled) {
+        const before = this.innerHTML;
+        const result = self.originals.appendChild.call(this, node);
+        const after = this.innerHTML;
+        
+        self.log({
+          method: 'appendChild',
+          messageId: messageId,
+          isRemote: true,
+          element: '.mes_text',
+          contentBefore: before,
+          contentAfter: after,
+          appendedNode: node.nodeName,
+          stack: new Error().stack
+        });
+        
+        return result;
+      }
+      return self.originals.appendChild.call(this, node);
+    };
+    
+    // insertBefore
+    this.originals.insertBefore = Node.prototype.insertBefore;
+    Node.prototype.insertBefore = function(newNode, refNode) {
+      const messageId = self.getMessageId(this);
+      const isRemote = this.closest?.('.mes[data-remote="true"]') !== null;
+      const isMesText = this.classList?.contains('mes_text');
+      
+      if (isRemote && isMesText && self.enabled) {
+        const before = this.innerHTML;
+        const result = self.originals.insertBefore.call(this, newNode, refNode);
+        const after = this.innerHTML;
+        
+        self.log({
+          method: 'insertBefore',
+          messageId: messageId,
+          isRemote: true,
+          element: '.mes_text',
+          contentBefore: before,
+          contentAfter: after,
+          stack: new Error().stack
+        });
+        
+        return result;
+      }
+      return self.originals.insertBefore.call(this, newNode, refNode);
+    };
+    
+    // replaceChild
+    this.originals.replaceChild = Node.prototype.replaceChild;
+    Node.prototype.replaceChild = function(newChild, oldChild) {
+      const messageId = self.getMessageId(this);
+      const isRemote = this.closest?.('.mes[data-remote="true"]') !== null;
+      const isMesText = this.classList?.contains('mes_text');
+      
+      if (isRemote && isMesText && self.enabled) {
+        const before = this.innerHTML;
+        const result = self.originals.replaceChild.call(this, newChild, oldChild);
+        const after = this.innerHTML;
+        
+        self.log({
+          method: 'replaceChild',
+          messageId: messageId,
+          isRemote: true,
+          element: '.mes_text',
+          contentBefore: before,
+          contentAfter: after,
+          stack: new Error().stack
+        });
+        
+        return result;
+      }
+      return self.originals.replaceChild.call(this, newChild, oldChild);
+    };
+    
+    // insertAdjacentHTML
+    this.originals.insertAdjacentHTML = Element.prototype.insertAdjacentHTML;
+    Element.prototype.insertAdjacentHTML = function(position, text) {
+      const messageId = self.getMessageId(this);
+      const isRemote = this.closest?.('.mes[data-remote="true"]') !== null;
+      const isMesText = this.classList?.contains('mes_text');
+      
+      if (isRemote && isMesText && self.enabled) {
+        const before = this.innerHTML;
+        self.originals.insertAdjacentHTML.call(this, position, text);
+        const after = this.innerHTML;
+        
+        self.log({
+          method: 'insertAdjacentHTML',
+          messageId: messageId,
+          isRemote: true,
+          element: '.mes_text',
+          position: position,
+          contentBefore: before,
+          contentAfter: after,
+          stack: new Error().stack
+        });
+      } else {
+        self.originals.insertAdjacentHTML.call(this, position, text);
+      }
+    };
+    
+    // Element.append
+    this.originals.append = Element.prototype.append;
+    Element.prototype.append = function(...nodes) {
+      const messageId = self.getMessageId(this);
+      const isRemote = this.closest?.('.mes[data-remote="true"]') !== null;
+      const isMesText = this.classList?.contains('mes_text');
+      
+      if (isRemote && isMesText && self.enabled) {
+        const before = this.innerHTML;
+        self.originals.append.apply(this, nodes);
+        const after = this.innerHTML;
+        
+        self.log({
+          method: 'Element.append',
+          messageId: messageId,
+          isRemote: true,
+          element: '.mes_text',
+          contentBefore: before,
+          contentAfter: after,
+          stack: new Error().stack
+        });
+      } else {
+        self.originals.append.apply(this, nodes);
+      }
+    };
+    
+    // Element.prepend
+    this.originals.prepend = Element.prototype.prepend;
+    Element.prototype.prepend = function(...nodes) {
+      const messageId = self.getMessageId(this);
+      const isRemote = this.closest?.('.mes[data-remote="true"]') !== null;
+      const isMesText = this.classList?.contains('mes_text');
+      
+      if (isRemote && isMesText && self.enabled) {
+        const before = this.innerHTML;
+        self.originals.prepend.apply(this, nodes);
+        const after = this.innerHTML;
+        
+        self.log({
+          method: 'Element.prepend',
+          messageId: messageId,
+          isRemote: true,
+          element: '.mes_text',
+          contentBefore: before,
+          contentAfter: after,
+          stack: new Error().stack
+        });
+      } else {
+        self.originals.prepend.apply(this, nodes);
+      }
+    };
+    
+    // Element.replaceChildren
+    if (Element.prototype.replaceChildren) {
+      this.originals.replaceChildren = Element.prototype.replaceChildren;
+      Element.prototype.replaceChildren = function(...nodes) {
+        const messageId = self.getMessageId(this);
+        const isRemote = this.closest?.('.mes[data-remote="true"]') !== null;
+        const isMesText = this.classList?.contains('mes_text');
+        
+        if (isRemote && isMesText && self.enabled) {
+          const before = this.innerHTML;
+          self.originals.replaceChildren.apply(this, nodes);
+          const after = this.innerHTML;
+          
+          self.log({
+            method: 'replaceChildren',
+            messageId: messageId,
+            isRemote: true,
+            element: '.mes_text',
+            contentBefore: before,
+            contentAfter: after,
+            stack: new Error().stack
+          });
+        } else {
+          self.originals.replaceChildren.apply(this, nodes);
+        }
+      };
+    }
+    
+    // ========== 劫持 jQuery 方法 ==========
+    
+    if (typeof $ !== 'undefined' && $.fn) {
+      // $.fn.html
+      this.originals.jQueryHtml = $.fn.html;
+      $.fn.html = function(value) {
+        if (arguments.length === 0) {
+          return self.originals.jQueryHtml.call(this);
+        }
+        
+        this.each(function() {
+          const messageId = self.getMessageId(this);
+          const isRemote = this.closest?.('.mes[data-remote="true"]') !== null;
+          const isMesText = this.classList?.contains('mes_text');
+          
+          if (isRemote && isMesText && self.enabled) {
+            const before = this.innerHTML;
+            self.originals.jQueryHtml.call($(this), value);
+            const after = this.innerHTML;
+            
+            self.log({
+              method: 'jQuery.html()',
+              messageId: messageId,
+              isRemote: true,
+              element: '.mes_text',
+              contentBefore: before,
+              contentAfter: after,
+              stack: new Error().stack
+            });
+          } else {
+            self.originals.jQueryHtml.call($(this), value);
+          }
+        });
+        
+        return this;
+      };
+      
+      // $.fn.text
+      this.originals.jQueryText = $.fn.text;
+      $.fn.text = function(value) {
+        if (arguments.length === 0) {
+          return self.originals.jQueryText.call(this);
+        }
+        
+        this.each(function() {
+          const messageId = self.getMessageId(this);
+          const isRemote = this.closest?.('.mes[data-remote="true"]') !== null;
+          const isMesText = this.classList?.contains('mes_text');
+          
+          if (isRemote && isMesText && self.enabled) {
+            const before = this.textContent;
+            self.originals.jQueryText.call($(this), value);
+            const after = this.textContent;
+            
+            self.log({
+              method: 'jQuery.text()',
+              messageId: messageId,
+              isRemote: true,
+              element: '.mes_text',
+              contentBefore: before,
+              contentAfter: after,
+              stack: new Error().stack
+            });
+          } else {
+            self.originals.jQueryText.call($(this), value);
+          }
+        });
+        
+        return this;
+      };
+      
+      // $.fn.append
+      this.originals.jQueryAppend = $.fn.append;
+      $.fn.append = function(...args) {
+        this.each(function() {
+          const messageId = self.getMessageId(this);
+          const isRemote = this.closest?.('.mes[data-remote="true"]') !== null;
+          const isMesText = this.classList?.contains('mes_text');
+          
+          if (isRemote && isMesText && self.enabled) {
+            const before = this.innerHTML;
+            self.originals.jQueryAppend.apply($(this), args);
+            const after = this.innerHTML;
+            
+            self.log({
+              method: 'jQuery.append()',
+              messageId: messageId,
+              isRemote: true,
+              element: '.mes_text',
+              contentBefore: before,
+              contentAfter: after,
+              stack: new Error().stack
+            });
+          } else {
+            self.originals.jQueryAppend.apply($(this), args);
+          }
+        });
+        
+        return this;
+      };
+      
+      // $.fn.prepend
+      this.originals.jQueryPrepend = $.fn.prepend;
+      $.fn.prepend = function(...args) {
+        this.each(function() {
+          const messageId = self.getMessageId(this);
+          const isRemote = this.closest?.('.mes[data-remote="true"]') !== null;
+          const isMesText = this.classList?.contains('mes_text');
+          
+          if (isRemote && isMesText && self.enabled) {
+            const before = this.innerHTML;
+            self.originals.jQueryPrepend.apply($(this), args);
+            const after = this.innerHTML;
+            
+            self.log({
+              method: 'jQuery.prepend()',
+              messageId: messageId,
+              isRemote: true,
+              element: '.mes_text',
+              contentBefore: before,
+              contentAfter: after,
+              stack: new Error().stack
+            });
+          } else {
+            self.originals.jQueryPrepend.apply($(this), args);
+          }
+        });
+        return this;
+      };
+      
+      // $.fn.empty
+      this.originals.jQueryEmpty = $.fn.empty;
+      $.fn.empty = function() {
+        this.each(function() {
+          const messageId = self.getMessageId(this);
+          const isRemote = this.closest?.('.mes[data-remote="true"]') !== null;
+          const isMesText = this.classList?.contains('mes_text');
+          
+          if (isRemote && isMesText && self.enabled) {
+            const before = this.innerHTML;
+            self.originals.jQueryEmpty.call($(this));
+            
+            self.log({
+              method: 'jQuery.empty()',
+              messageId: messageId,
+              isRemote: true,
+              element: '.mes_text',
+              contentBefore: before,
+              contentAfter: '',
+              stack: new Error().stack
+            });
+          } else {
+            self.originals.jQueryEmpty.call($(this));
+          }
+        });
+        
+        return this;
+      };
+      
+      // $.fn.replaceWith
+      this.originals.jQueryReplaceWith = $.fn.replaceWith;
+      $.fn.replaceWith = function(newContent) {
+        this.each(function() {
+          const messageId = self.getMessageId(this);
+          const isRemote = this.closest?.('.mes[data-remote="true"]') !== null;
+          const isMesText = this.classList?.contains('mes_text');
+          
+          if (isRemote && isMesText && self.enabled) {
+            const before = this.outerHTML;
+            
+            self.log({
+              method: 'jQuery.replaceWith()',
+              messageId: messageId,
+              isRemote: true,
+              element: '.mes_text',
+              contentBefore: before,
+              contentAfter: typeof newContent === 'string' ? newContent : '[DOM Node]',
+              stack: new Error().stack
+            });
+          }
+        });
+        
+        return self.originals.jQueryReplaceWith.call(this, newContent);
+      };
+      
+      console.log('[追踪系统] jQuery 方法劫持完成');
+    }
+    
+    // ========== 劫持事件系统 ==========
+    
+    const ctx = getContext();
+    if (ctx && ctx.eventSource && ctx.eventSource.emit) {
+      this.originals.eventSourceEmit = ctx.eventSource.emit.bind(ctx.eventSource);
+      
+      ctx.eventSource.emit = async function(eventType, ...args) {
+        const criticalEvents = [
+          'MESSAGE_RECEIVED',
+          'MESSAGE_UPDATED',
+          'MESSAGE_EDITED',
+          'MESSAGE_SWIPED',
+          'CHARACTER_MESSAGE_RENDERED',
+          'USER_MESSAGE_RENDERED',
+        ];
+        
+        const eventName = typeof eventType === 'string' ? eventType : eventType?.toString();
+        
+        if (self.enabled && criticalEvents.some(e => eventName?.includes(e))) {
+          const messageId = args[0];
+          let snapshotBefore = null;
+          
+          // 如果是远程消息，记录事件前的快照
+          if (typeof messageId === 'number') {
+            const mesText = document.querySelector(`.mes[mesid="${messageId}"][data-remote="true"] .mes_text`);
+            if (mesText) {
+              snapshotBefore = self.createSnapshot(mesText);
+            }
+          }
+          
+          // 调用原事件
+          const result = await self.originals.eventSourceEmit(eventType, ...args);
+          
+          // 比较变化
+          if (snapshotBefore && typeof messageId === 'number') {
+            const mesText = document.querySelector(`.mes[mesid="${messageId}"][data-remote="true"] .mes_text`);
+            if (mesText) {
+              const snapshotAfter = self.createSnapshot(mesText);
+              
+              if (snapshotBefore.innerHTML !== snapshotAfter.innerHTML) {
+                self.log({
+                  method: 'Event: ' + eventName,
+                  messageId: messageId,
+                  isRemote: true,
+                  element: '.mes_text',
+                  eventType: eventName,
+                  eventArgs: args,
+                  contentBefore: snapshotBefore.innerHTML,
+                  contentAfter: snapshotAfter.innerHTML,
+                  stack: new Error().stack,
+                  note: '事件处理期间内容发生变化'
+                });
+              }
+            }
+          }
+          
+          return result;
+        }
+        
+        return self.originals.eventSourceEmit(eventType, ...args);
+      };
+      
+      console.log('[追踪系统] 事件系统劫持完成');
+    }
+    
+    // ========== 劫持酒馆核心函数 ==========
+    
+    // 劫持 messageFormatting
+    if (typeof window.messageFormatting === 'function') {
+      this.originals.messageFormatting = window.messageFormatting;
+      window.messageFormatting = function(...args) {
+        const messageId = args[4]; // 第5个参数是 messageId
+        
+        if (self.enabled && typeof messageId === 'number') {
+          const chat = getChat();
+          const msg = chat[messageId];
+          
+          if (msg?.extra?.isRemote) {
+            self.log({
+              method: 'messageFormatting()',
+              messageId: messageId,
+              isRemote: true,
+              inputText: args[0]?.substring?.(0, 100),
+              charName: args[1],
+              isSystem: args[2],
+              isUser: args[3],
+              stack: new Error().stack,
+              note: '远程消息正在被 messageFormatting 处理！'
+            });
+          }
+        }
+        
+        return self.originals.messageFormatting.apply(this, args);
+      };
+      console.log('[追踪系统] messageFormatting 劫持完成');
+    }
+    
+    // 劫持 updateMessageBlock (通过 context)
+    if (ctx && typeof ctx.updateMessageBlock === 'function') {
+      this.originals.updateMessageBlock = ctx.updateMessageBlock;
+      ctx.updateMessageBlock = function(messageId, message, options = {}) {
+        if (self.enabled) {
+          const chat = getChat();
+          const msg = chat[messageId];
+          
+          if (msg?.extra?.isRemote) {
+            const mesText = document.querySelector(`.mes[mesid="${messageId}"] .mes_text`);
+            const before = mesText?.innerHTML;
+            
+            self.log({
+              method: 'updateMessageBlock()',
+              messageId: messageId,
+              isRemote: true,
+              messageData: {
+                mes: message?.mes?.substring?.(0, 100),
+                displayText: message?.extra?.display_text?.substring?.(0, 100),
+              },
+              options: options,
+              contentBefore: before,
+              stack: new Error().stack,
+              note: '⚠️ 远程消息正在被 updateMessageBlock 重新渲染！'
+            });
+          }
+        }
+        
+        return self.originals.updateMessageBlock.call(this, messageId, message, options);
+      };
+      console.log('[追踪系统] updateMessageBlock 劫持完成');
+    }
+    
+    this.installed = true;
+    this.enabled = true;
+    
+    console.log('%c[追踪系统] ✅ 安装完成！所有陷阱已就位', 'color: #4ade80; font-weight: bold; font-size: 14px;');
+    console.log('%c[追踪系统] 使用 mpDebug.trace.show() 查看追踪日志', 'color: #4ade80;');
+  },
+  
+  // 卸载追踪系统
+  uninstall: function() {
+    if (!this.installed) {
+      console.log('[追踪系统] 未安装，无需卸载');
+      return;
+    }
+    
+    console.log('[追踪系统] 开始卸载...');
+    
+    // 恢复原生 DOM API
+    if (this.originals.innerHTMLSetter) {
+      Object.defineProperty(Element.prototype, 'innerHTML', {
+        set: this.originals.innerHTMLSetter,
+        get: Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML').get,
+        configurable: true
+      });
+    }
+    
+    if (this.originals.outerHTMLSetter) {
+      Object.defineProperty(Element.prototype, 'outerHTML', {
+        set: this.originals.outerHTMLSetter,
+        get: Object.getOwnPropertyDescriptor(Element.prototype, 'outerHTML').get,
+        configurable: true
+      });
+    }
+    
+    if (this.originals.textContentSetter) {
+      Object.defineProperty(Node.prototype, 'textContent', {
+        set: this.originals.textContentSetter,
+        get: Object.getOwnPropertyDescriptor(Node.prototype, 'textContent').get,
+        configurable: true
+      });
+    }
+    
+    if (this.originals.appendChild) {
+      Node.prototype.appendChild = this.originals.appendChild;
+    }
+    if (this.originals.insertBefore) {
+      Node.prototype.insertBefore = this.originals.insertBefore;
+    }
+    if (this.originals.replaceChild) {
+      Node.prototype.replaceChild = this.originals.replaceChild;
+    }
+    if (this.originals.insertAdjacentHTML) {
+      Element.prototype.insertAdjacentHTML = this.originals.insertAdjacentHTML;
+    }
+    if (this.originals.append) {
+      Element.prototype.append = this.originals.append;
+    }
+    if (this.originals.prepend) {
+      Element.prototype.prepend = this.originals.prepend;
+    }
+    if (this.originals.replaceChildren) {
+      Element.prototype.replaceChildren = this.originals.replaceChildren;
+    }
+    
+    // 恢复 jQuery
+    if (this.originals.jQueryHtml) {
+      $.fn.html = this.originals.jQueryHtml;
+    }
+    if (this.originals.jQueryText) {
+      $.fn.text = this.originals.jQueryText;
+    }
+    if (this.originals.jQueryAppend) {
+      $.fn.append = this.originals.jQueryAppend;
+    }
+    if (this.originals.jQueryPrepend) {
+      $.fn.prepend = this.originals.jQueryPrepend;
+    }
+    if (this.originals.jQueryEmpty) {
+      $.fn.empty = this.originals.jQueryEmpty;
+    }
+    if (this.originals.jQueryReplaceWith) {
+      $.fn.replaceWith = this.originals.jQueryReplaceWith;
+    }
+    
+    // 恢复事件系统
+    const ctx = getContext();
+    if (this.originals.eventSourceEmit && ctx?.eventSource) {
+      ctx.eventSource.emit = this.originals.eventSourceEmit;
+    }
+    
+    // 恢复酒馆函数
+    if (this.originals.messageFormatting) {
+      window.messageFormatting = this.originals.messageFormatting;
+    }
+    if (this.originals.updateMessageBlock && ctx) {
+      ctx.updateMessageBlock = this.originals.updateMessageBlock;
+    }
+    
+    this.installed = false;
+    this.enabled = false;
+    
+    console.log('%c[追踪系统] ✅ 卸载完成', 'color: #4ade80; font-weight: bold;');
+  },
+  
+  // 启用/禁用追踪
+  enable: function() {
+    this.enabled = true;
+    console.log('[追踪系统] 已启用');
+  },
+  
+  disable: function() {
+    this.enabled = false;
+    console.log('[追踪系统] 已禁用（陷阱仍在，但不记录）');
+  },
+  
+  // ========== 查看日志 ==========
+  
+  // 显示所有日志
+  show: function(count = 50) {
+    console.log('%c═══════════════════════════════════════════════════════════════', 'color: #4ade80;');
+    console.log('%c                    📋 追踪日志 (最近 ' + count + ' 条)                    ', 'color: #4ade80; font-weight: bold; font-size: 14px;');
+    console.log('%c═══════════════════════════════════════════════════════════════', 'color: #4ade80;');
+    
+    const recentLogs = this.logs.slice(-count);
+    
+    if (recentLogs.length === 0) {
+      console.log('暂无追踪记录');
+      return;
+    }
+    
+    recentLogs.forEach(entry => this.printEntry(entry));
+    
+    console.log('%c═══════════════════════════════════════════════════════════════', 'color: #4ade80;');
+    console.log('总记录数:', this.logs.length);
+    console.log('污染事件:', this.stats.corruptions);
+  },
+  
+  // 显示特定消息的日志
+  showMessage: function(messageId) {
+    const messageLogs = this.logs.filter(e => e.messageId === messageId);
+    
+    console.log('%c═══════════════════════════════════════════════════════════════', 'color: #4ade80;');
+    console.log('%c               📋 消息 #' + messageId + ' 的追踪日志                ', 'color: #4ade80; font-weight: bold; font-size: 14px;');
+    console.log('%c═══════════════════════════════════════════════════════════════', 'color: #4ade80;');
+    
+    if (messageLogs.length === 0) {
+      console.log('该消息无追踪记录');
+      return;
+    }
+    
+    messageLogs.forEach(entry => this.printEntry(entry));
+    
+    console.log('共', messageLogs.length, '条记录');
+  },
+  
+  // 显示所有污染事件
+  showCorruptions: function() {
+    const corruptions = this.logs.filter(e => e.isCorruption);
+    
+    console.log('%c═══════════════════════════════════════════════════════════════', 'color: #ff4444;');
+    console.log('%c                    🔴 污染事件列表                              ', 'color: #ff4444; font-weight: bold; font-size: 14px;');
+    console.log('%c═══════════════════════════════════════════════════════════════', 'color: #ff4444;');
+    
+    if (corruptions.length === 0) {
+      console.log('%c✅ 太好了！没有检测到污染事件', 'color: #4ade80; font-weight: bold;');
+      return;
+    }
+    
+    corruptions.forEach(entry => {
+      console.log('%c────────────────────────────────────────', 'color: #ff4444;');
+      this.printEntry(entry);
+    });
+    
+    console.log('%c═══════════════════════════════════════════════════════════════', 'color: #ff4444;');
+    console.log('%c共发现 ' + corruptions.length + ' 个污染事件', 'color: #ff4444; font-weight: bold;');
+    
+    // 分析污染来源
+    const sources = {};
+    corruptions.forEach(e => {
+      const key = e.triggerFile + ':' + e.triggerFunction;
+      sources[key] = (sources[key] || 0) + 1;
+    });
+    
+    console.log('\n%c污染来源统计:', 'color: #f59e0b; font-weight: bold;');
+    Object.entries(sources)
+      .sort((a, b) => b[1] - a[1])
+      .forEach(([source, count]) => {
+        console.log('  ' + source + ': ' + count + ' 次');
+      });
+  },
+  
+  // 显示统计信息
+  showStats: function() {
+    console.log('%c═══════════════════════════════════════════════════════════════', 'color: #4ade80;');
+    console.log('%c                       📊 追踪统计                              ', 'color: #4ade80; font-weight: bold; font-size: 14px;');
+    console.log('%c═══════════════════════════════════════════════════════════════', 'color: #4ade80;');
+    
+    console.log('\n总修改次数:', this.stats.totalModifications);
+    console.log('污染事件数:', this.stats.corruptions);
+    
+    console.log('\n%c按方法统计:', 'color: #f59e0b; font-weight: bold;');
+    Object.entries(this.stats.byMethod)
+      .sort((a, b) => b[1] - a[1])
+      .forEach(([method, count]) => {
+        console.log('  ' + method + ': ' + count + ' 次');
+      });
+    
+    console.log('\n%c按文件统计:', 'color: #f59e0b; font-weight: bold;');
+    Object.entries(this.stats.byFile)
+      .sort((a, b) => b[1] - a[1])
+      .forEach(([file, count]) => {
+        console.log('  ' + file + ': ' + count + ' 次');
+      });
+  },
+  
+  // 导出日志
+  export: function() {
+    const data = {
+      exportTime: new Date().toISOString(),
+      stats: this.stats,
+      logs: this.logs
+    };
+    
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'trace-log-' + Date.now() + '.json';
+    a.click();
+    URL.revokeObjectURL(url);
+    
+    console.log('[追踪系统] 日志已导出');
+  },
+  
+  // 清除日志
+  clear: function() {
+    this.logs = [];
+    this.stats = {
+      totalModifications: 0,
+      byMethod: {},
+      byFile: {},
+      corruptions: 0,
+    };
+    console.log('[追踪系统] 日志已清除');
+  },
+  
+  // 生成污染报告
+  generateReport: function() {
+    const corruptions = this.logs.filter(e => e.isCorruption);
+    
+    if (corruptions.length === 0) {
+      console.log('%c✅ 没有发现污染，无需生成报告', 'color: #4ade80; font-weight: bold;');
+      return null;
+    }
+    
+    // 分析污染模式
+    const patterns = {};
+    corruptions.forEach(e => {
+      const pattern = {
+        triggerFile: e.triggerFile,
+        triggerFunction: e.triggerFunction,
+        method: e.method,
+      };
+      const key = JSON.stringify(pattern);
+      if (!patterns[key]) {
+        patterns[key] = {
+          ...pattern,
+          count: 0,
+          examples: []
+        };
+      }
+      patterns[key].count++;
+      if (patterns[key].examples.length < 3) {
+        patterns[key].examples.push({
+          messageId: e.messageId,
+          time: e.timeReadable,
+          callChain: e.callChain?.slice(0, 5)
+        });
+      }
+    });
+    
+    const report = {
+      summary: {
+        totalCorruptions: corruptions.length,
+        uniquePatterns: Object.keys(patterns).length,
+        affectedMessages: [...new Set(corruptions.map(e => e.messageId))].length,
+      },
+      patterns: Object.values(patterns).sort((a, b) => b.count - a.count),
+      recommendation: []
+    };
+    
+    // 生成建议
+    report.patterns.forEach(p => {
+      if (p.triggerFile === 'reasoning.js') {
+        report.recommendation.push({
+          issue: 'reasoning.js 的 auto_parse 功能触发了 updateMessageBlock',
+          solution: '在远程消息上禁用 auto_parse，或者在 updateMessageBlock 劫持中拦截远程消息'
+        });
+      }
+      if (p.method === 'jQuery.html()' || p.method === 'innerHTML') {
+        report.recommendation.push({
+          issue: p.triggerFunction + ' 直接修改了远程消息的 HTML',
+          solution: '在 ' + p.triggerFile + ' 中检查是否是远程消息，如果是则跳过处理'
+        });
+      }
+    });
+    
+    console.log('%c═══════════════════════════════════════════════════════════════', 'color: #ff4444;');
+    console.log('%c                    📋 污染分析报告                              ', 'color: #ff4444; font-weight: bold; font-size: 16px;');
+    console.log('%c═══════════════════════════════════════════════════════════════', 'color: #ff4444;');
+    
+    console.log('\n%c📊 概要:', 'font-weight: bold; font-size: 14px;');
+    console.log('  总污染事件:', report.summary.totalCorruptions);
+    console.log('  独立模式数:', report.summary.uniquePatterns);
+    console.log('  受影响消息:', report.summary.affectedMessages);
+    
+    console.log('\n%c🔍 污染模式:', 'font-weight: bold; font-size: 14px;');
+    report.patterns.forEach((p, i) => {
+      console.log('\n  模式 #' + (i + 1) + ' (' + p.count + ' 次):');
+      console.log('    触发文件:', p.triggerFile);
+      console.log('    触发函数:', p.triggerFunction);
+      console.log('    修改方法:', p.method);
+      console.log('    示例调用栈:');
+      if (p.examples[0]?.callChain) {
+        p.examples[0].callChain.forEach((c, j) => {
+          console.log('      ' + (j + 1) + '. ' + c.function + ' @ ' + c.file + ':' + c.line);
+        });
+      }
+    });
+    
+    if (report.recommendation.length > 0) {
+      console.log('\n%c💡 修复建议:', 'font-weight: bold; font-size: 14px; color: #4ade80;');
+      report.recommendation.forEach((r, i) => {
+        console.log('\n  建议 #' + (i + 1) + ':');
+        console.log('    问题:', r.issue);
+        console.log('    解决:', r.solution);
+      });
+    }
+    
+    console.log('%c═══════════════════════════════════════════════════════════════', 'color: #ff4444;');
+    
+    return report;
+  }
+};
 
 // ========== 工具函数 ==========
 function log(msg) {
@@ -505,10 +1767,30 @@ function hijackUpdateMessageBlock() {
   }
   
   ctx.updateMessageBlock = function(messageId, message, options = {}) {
-    const result = original.call(this, messageId, message, options);
-    
     const chat = getChat();
     const msg = chat[messageId];
+    
+    // ========== 接收方保护逻辑（在调用原函数之前拦截）==========
+    if (msg?.extra?.isRemote && msg?.extra?.remoteFormattedHtml) {
+      log('🛡️ 拦截 updateMessageBlock 对远程消息 #' + messageId + ' 的调用');
+      
+      // 不调用原函数，直接恢复我们的HTML
+      setTimeout(() => {
+        const element = document.querySelector(`.mes[mesid="${messageId}"] .mes_text`);
+        if (element) {
+          // 临时禁用追踪，避免记录我们自己的恢复操作
+          const wasEnabled = TraceSystem.enabled;
+          TraceSystem.enabled = false;
+          element.innerHTML = msg.extra.remoteFormattedHtml;
+          TraceSystem.enabled = wasEnabled;
+          log('🛡️ 已恢复远程消息 #' + messageId);
+        }
+      }, 10);
+      
+      return; // 不调用原函数
+    }
+    
+    const result = original.call(this, messageId, message, options);
     
     // ========== 发送方捕获逻辑 ==========
     if (pendingCapture.enabled && 
@@ -537,22 +1819,11 @@ function hijackUpdateMessageBlock() {
       }, 0);
     }
     
-    // ========== 接收方保护逻辑 ==========
-    if (msg?.extra?.isRemote && msg?.extra?.remoteFormattedHtml) {
-      setTimeout(() => {
-        const element = document.querySelector(`.mes[mesid="${messageId}"] .mes_text`);
-        if (element) {
-          element.innerHTML = msg.extra.remoteFormattedHtml;
-          log('恢复远程消息: #' + messageId);
-        }
-      }, 10);
-    }
-    
     return result;
   };
   
   ctx._updateMessageBlockHijacked = true;
-  log('✅ 已劫持 updateMessageBlock');
+  log('✅ 已劫持 updateMessageBlock（含远程消息保护）');
 }
 
 // ========================================
@@ -636,6 +1907,9 @@ function setupDOMObserver() {
         const mesElement = mutation.target.closest('.mes');
         if (!mesElement) continue;
         
+        // 跳过远程消息
+        if (mesElement.getAttribute('data-remote') === 'true') continue;
+        
         const messageId = parseInt(mesElement.getAttribute('mesid'));
         if (isNaN(messageId)) continue;
         
@@ -683,14 +1957,39 @@ function protectRemoteMessage(messageId) {
     if (!element) return;
     
     let isRestoring = false;
+    let restoreCount = 0;
     
-    const observer = new MutationObserver(function() {
+    const observer = new MutationObserver(function(mutations) {
       if (isRestoring) return;
       
-      log('检测到远程消息变化，恢复: #' + messageId);
+      // 检查是否真的发生了内容变化
+      const currentHtml = element.innerHTML;
+      if (currentHtml === remoteHtml) return;
+      
+      restoreCount++;
+      log('🛡️ 检测到远程消息 #' + messageId + ' 被修改（第' + restoreCount + '次），正在恢复...');
+      
+      // 记录到追踪系统
+      if (TraceSystem.enabled) {
+        TraceSystem.log({
+          method: '保护器检测到修改',
+          messageId: messageId,
+          isRemote: true,
+          element: '.mes_text',
+          contentBefore: remoteHtml.substring(0, 100),
+          contentAfter: currentHtml.substring(0, 100),
+          stack: new Error().stack,
+          note: '保护器即将恢复内容'
+        });
+      }
       
       isRestoring = true;
+      
+      // 临时禁用追踪
+      const wasEnabled = TraceSystem.enabled;
+      TraceSystem.enabled = false;
       element.innerHTML = remoteHtml;
+      TraceSystem.enabled = wasEnabled;
       
       setTimeout(function() {
         isRestoring = false;
@@ -704,12 +2003,17 @@ function protectRemoteMessage(messageId) {
     });
     
     remoteMessageObservers.set(messageId, observer);
-    log('已设置远程消息保护: #' + messageId);
+    log('✅ 已设置远程消息保护: #' + messageId);
     
+    // 立即检查当前内容是否已被破坏
     const currentHtml = element.innerHTML;
-    if (currentHtml.includes('[远程消息]') || currentHtml.length < 100) {
-      log('保护器：DOM已被破坏，立即恢复 #' + messageId);
+    if (currentHtml !== remoteHtml && (currentHtml.includes('[远程消息]') || currentHtml.length < 100)) {
+      log('🛡️ 保护器：DOM已被破坏，立即恢复 #' + messageId);
+      
+      const wasEnabled = TraceSystem.enabled;
+      TraceSystem.enabled = false;
       element.innerHTML = remoteHtml;
+      TraceSystem.enabled = wasEnabled;
     }
   }, 200);
 }
@@ -1086,6 +2390,9 @@ function handleRemoteAiStream(msg) {
     const messageId = chat.length - 1;
     addOneMessage(message, { forceId: messageId, scroll: true });
     
+    // 标记为远程消息
+    $(`.mes[mesid="${messageId}"]`).attr('data-remote', 'true');
+    
     remoteStreamMap.set(msg.senderId, {
       messageId: messageId,
       charName: msg.charName
@@ -1096,7 +2403,11 @@ function handleRemoteAiStream(msg) {
     setTimeout(() => {
       const mesText = $(`.mes[mesid="${messageId}"] .mes_text`);
       if (mesText.length) {
+        // 临时禁用追踪
+        const wasEnabled = TraceSystem.enabled;
+        TraceSystem.enabled = false;
         mesText.html(simpleRender(msg.content));
+        TraceSystem.enabled = wasEnabled;
       }
     }, 50);
     
@@ -1109,7 +2420,11 @@ function handleRemoteAiStream(msg) {
     
     const mesText = $(`.mes[mesid="${messageId}"] .mes_text`);
     if (mesText.length) {
+      // 临时禁用追踪
+      const wasEnabled = TraceSystem.enabled;
+      TraceSystem.enabled = false;
       mesText.html(simpleRender(msg.content));
+      TraceSystem.enabled = wasEnabled;
     }
   }
   
@@ -1148,16 +2463,22 @@ function handleRemoteAiComplete(msg) {
       chat[messageId].extra.remoteCharName = msg.charName;
     }
     
-    // 覆盖 DOM
+    // 覆盖 DOM（临时禁用追踪，因为这是我们自己的操作）
     const mesText = $(`.mes[mesid="${messageId}"] .mes_text`);
     if (mesText.length) {
+      const wasEnabled = TraceSystem.enabled;
+      TraceSystem.enabled = false;
       mesText.html(msg.formattedHtml);
+      TraceSystem.enabled = wasEnabled;
       
       logDebug('接收端DOM覆盖完成', {
         '消息ID': messageId,
         'DOM内容前100字': mesText.html().substring(0, 100)
       });
     }
+    
+    // 确保标记为远程消息
+    $(`.mes[mesid="${messageId}"]`).attr('data-remote', 'true');
     
     // 触发事件让酒馆助手处理
     setTimeout(() => {
@@ -1208,11 +2529,17 @@ function handleRemoteAiComplete(msg) {
     const messageId = chat.length - 1;
     addOneMessage(message, { forceId: messageId, scroll: true });
     
+    // 标记为远程消息
+    $(`.mes[mesid="${messageId}"]`).attr('data-remote', 'true');
+    
     // 覆盖DOM
     setTimeout(() => {
       const mesText = $(`.mes[mesid="${messageId}"] .mes_text`);
       if (mesText.length) {
+        const wasEnabled = TraceSystem.enabled;
+        TraceSystem.enabled = false;
         mesText.html(msg.formattedHtml);
+        TraceSystem.enabled = wasEnabled;
       }
     }, 50);
     
@@ -1253,7 +2580,14 @@ function restoreRemoteMessages() {
       
       const mesText = $(`.mes[mesid="${messageId}"] .mes_text`);
       if (mesText.length) {
+        // 临时禁用追踪
+        const wasEnabled = TraceSystem.enabled;
+        TraceSystem.enabled = false;
         mesText.html(msg.extra.remoteFormattedHtml);
+        TraceSystem.enabled = wasEnabled;
+        
+        // 标记为远程消息
+        $(`.mes[mesid="${messageId}"]`).attr('data-remote', 'true');
         
         protectRemoteMessage(messageId);
         addRemoteTag(messageId, '联机AI', 'ai');
@@ -1285,6 +2619,9 @@ function setupEventListeners() {
   setupEventInterceptor();
   setupDOMObserver();
   setupPrepareMessagesHijack();
+  
+  // 安装追踪系统
+  TraceSystem.install();
   
   // 生成开始
   eventSource.on(event_types.GENERATION_STARTED, function(type, options, dryRun) {
@@ -2067,6 +3404,7 @@ function buildPanelHTML() {
   
   html += '<div class="mp-version-footer" style="margin-top:15px;padding-top:15px;border-top:1px solid #333;text-align:center;font-size:12px;">';
   html += '<div style="color:#666;">酒馆联机 v' + CURRENT_VERSION + '</div>';
+  html += '<div style="color:#888;font-size:10px;margin-top:4px;">追踪系统: ' + (TraceSystem.enabled ? '✅ 已启用' : '❌ 未启用') + '</div>';
   html += '</div>';
   
   html += '</div>';
@@ -2395,6 +3733,7 @@ function debugState() {
   console.log('远程消息保护器:', remoteMessageObservers.size);
   console.log('正在生成:', isGenerating);
   console.log('待捕获状态:', pendingCapture);
+  console.log('追踪系统:', TraceSystem.enabled ? '已启用' : '未启用');
   console.log('====================');
 }
 
@@ -2443,7 +3782,7 @@ jQuery(async () => {
     
     createExtensionUI();
     
-        setupActivityListener();
+    setupActivityListener();
     setupSendInterceptor();
     setupEventListeners();
     setupUserNameWatcher();
@@ -2472,6 +3811,24 @@ window.mpDebug = {
   disconnect: normalDisconnect,
   openPanel: openPanel,
   restoreRemote: restoreRemoteMessages,
+  
+  // 追踪系统命令
+  trace: {
+    install: () => TraceSystem.install(),
+    uninstall: () => TraceSystem.uninstall(),
+    enable: () => TraceSystem.enable(),
+    disable: () => TraceSystem.disable(),
+    show: (count) => TraceSystem.show(count),
+    showMessage: (id) => TraceSystem.showMessage(id),
+    showCorruptions: () => TraceSystem.showCorruptions(),
+    showStats: () => TraceSystem.showStats(),
+    export: () => TraceSystem.export(),
+    clear: () => TraceSystem.clear(),
+    report: () => TraceSystem.generateReport(),
+    get logs() { return TraceSystem.logs; },
+    get stats() { return TraceSystem.stats; },
+    get enabled() { return TraceSystem.enabled; },
+  },
   
   testCapture: function() {
     const chat = getChat();
@@ -2511,6 +3868,7 @@ window.mpDebug = {
     console.log('chat[].extra.remoteFormattedHtml 长度:', chat[id]?.extra?.remoteFormattedHtml?.length || 0);
     console.log('chat[].extra.isRemote:', chat[id]?.extra?.isRemote);
     console.log('保护器是否存在:', remoteMessageObservers.has(id));
+    console.log('data-remote属性:', $(`.mes[mesid="${id}"]`).attr('data-remote'));
     
     if (chat[id]?.extra?.remoteFormattedHtml) {
       console.log('远程HTML前200字符:', chat[id].extra.remoteFormattedHtml.substring(0, 200));
@@ -2560,18 +3918,103 @@ window.mpDebug = {
     }
   },
   
+  // 模拟远程消息接收（用于测试）
+  simulateRemote: function(html) {
+    const chat = getChat();
+    const ctx = getContext();
+    
+    const message = {
+      name: '测试AI',
+      is_user: false,
+      is_system: false,
+      send_date: getMessageTimeStamp(),
+      mes: '[远程消息]',
+      extra: {
+        isRemote: true,
+        remoteFormattedHtml: html || '<p>这是一条<strong>测试</strong>远程消息</p>',
+        remoteSender: '测试用户',
+        remoteSenderId: 'test-id',
+        remoteCharName: '测试AI'
+      }
+    };
+    
+    chat.push(message);
+    const messageId = chat.length - 1;
+    ctx.addOneMessage(message, { forceId: messageId, scroll: true });
+    
+    // 标记为远程消息
+    $(`.mes[mesid="${messageId}"]`).attr('data-remote', 'true');
+    
+    // 覆盖DOM
+    setTimeout(() => {
+      const mesText = $(`.mes[mesid="${messageId}"] .mes_text`);
+      if (mesText.length) {
+        const wasEnabled = TraceSystem.enabled;
+        TraceSystem.enabled = false;
+        mesText.html(message.extra.remoteFormattedHtml);
+        TraceSystem.enabled = wasEnabled;
+      }
+      
+      // 设置保护器
+      protectRemoteMessage(messageId);
+      addRemoteTag(messageId, '联机AI', 'ai');
+      
+      // 触发事件
+      ctx.eventSource.emit(ctx.eventTypes.CHARACTER_MESSAGE_RENDERED, messageId);
+      
+      console.log('已创建测试远程消息 #' + messageId);
+    }, 50);
+    
+    return messageId;
+  },
+  
+  // 手动触发污染（用于测试追踪系统）
+  triggerCorruption: function(messageId) {
+    const chat = getChat();
+    const id = messageId !== undefined ? messageId : chat.length - 1;
+    
+    const mesText = document.querySelector(`.mes[mesid="${id}"] .mes_text`);
+    if (!mesText) {
+      console.log('找不到消息 #' + id);
+      return;
+    }
+    
+    console.log('手动触发污染测试...');
+    mesText.innerHTML = '<p>这是被污染的内容</p>';
+    console.log('已触发，检查追踪日志');
+  },
+  
   get chat() { return getChat(); },
   get contextCache() { return remoteContextCache; },
   get messageObservers() { return remoteMessageObservers; },
-  get pending() { return pendingCapture; }
+  get pending() { return pendingCapture; },
+  get traceSystem() { return TraceSystem; }
 };
 
 log('调试命令已注册: window.mpDebug');
-log('- mpDebug.state() 查看联机状态');
-log('- mpDebug.syncLog() 查看同步日志汇总');
-log('- mpDebug.testCapture() 测试最后一条消息的DOM');
-log('- mpDebug.testPendingCapture() 查看待捕获状态');
-log('- mpDebug.testProtector(id) 测试保护器状态');
-log('- mpDebug.showRemoteCache() 查看远程上下文缓存');
-log('- mpDebug.forceCapture() 强制捕获最后一条消息');
-log('- mpDebug.restoreRemote() 手动恢复远程消息');
+log('========================================');
+log('基础命令:');
+log('  mpDebug.state() - 查看联机状态');
+log('  mpDebug.syncLog() - 查看同步日志汇总');
+log('  mpDebug.testCapture() - 测试最后一条消息的DOM');
+log('  mpDebug.testProtector(id) - 测试保护器状态');
+log('  mpDebug.restoreRemote() - 手动恢复远程消息');
+log('========================================');
+log('🕵️ 追踪系统命令:');
+log('  mpDebug.trace.show() - 显示追踪日志');
+log('  mpDebug.trace.show(100) - 显示最近100条');
+log('  mpDebug.trace.showMessage(42) - 显示消息#42的日志');
+log('  mpDebug.trace.showCorruptions() - 显示所有污染事件');
+log('  mpDebug.trace.showStats() - 显示统计信息');
+log('  mpDebug.trace.report() - 生成污染分析报告');
+log('  mpDebug.trace.export() - 导出日志为JSON');
+log('  mpDebug.trace.clear() - 清除日志');
+log('  mpDebug.trace.disable() - 暂停追踪');
+log('  mpDebug.trace.enable() - 恢复追踪');
+log('  mpDebug.trace.uninstall() - 卸载追踪系统');
+log('========================================');
+log('测试命令:');
+log('  mpDebug.simulateRemote() - 模拟接收远程消息');
+log('  mpDebug.simulateRemote("<p>自定义HTML</p>")');
+log('  mpDebug.triggerCorruption() - 手动触发污染测试');
+log('========================================');
