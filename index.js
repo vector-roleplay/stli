@@ -16,7 +16,7 @@ const extensionName = 'stli';
 const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
 
 // ========== GitHub更新配置 ==========
-const GITHUB_OWNER = '死苏';
+const GITHUB_OWNER = 'vector-roleplay';
 const GITHUB_REPO = 'stli';
 const GITHUB_BRANCH = 'main';
 const CURRENT_VERSION = '2.4.0';
@@ -3075,4 +3075,5 @@ log('- mpDebug.testInterceptor() 手动测试事件拦截');
 log('- mpDebug.testProtector(id) 测试保护器状态');
 log('- mpDebug.checkUpdate() 手动检查更新');
 log('- mpDebug.performUpdate() 手动执行更新');
+
 log('- mpDebug.restoreRemote() 手动恢复远程消息');
