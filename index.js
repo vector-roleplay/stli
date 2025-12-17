@@ -15,7 +15,7 @@ import { extension_settings, getContext } from '../../../extensions.js';
 const extensionName = 'stli';
 const extensionFolderPath = 'scripts/extensions/third-party/' + extensionName;
 // ========== 版本信息 ==========
-const CURRENT_VERSION = '2.7.0';
+const CURRENT_VERSION = '2.7.1';
 
 const defaultSettings = {
   serverUrl: 'wss://chu.zeabur.app',
