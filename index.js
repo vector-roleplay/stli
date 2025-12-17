@@ -2658,4 +2658,5 @@ log('- mpDebug.testInterceptor() 手动测试事件拦截');
 log('- mpDebug.testProtector(id) 测试保护器状态');
 log('- mpDebug.showRemoteCache() 查看远程上下文缓存');
 log('- mpDebug.clearRemoteCache() 清除远程上下文缓存');
+
 log('- mpDebug.restoreRemote() 手动恢复远程消息');
