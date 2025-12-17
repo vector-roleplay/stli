@@ -19,7 +19,7 @@ const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
 const GITHUB_OWNER = 'vector-roleplay';
 const GITHUB_REPO = 'stli';
 const GITHUB_BRANCH = 'main';
-const CURRENT_VERSION = '2.4.0';
+const CURRENT_VERSION = '2.5.0';
 
 // ========== 更新状态变量 ==========
 let updateAvailable = false;
