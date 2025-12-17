@@ -765,7 +765,7 @@ function protectRemoteMessage(messageId) {
       log('保护器：DOM已被破坏，立即恢复 #' + messageId);
       element.innerHTML = remoteHtml;
     }
-  }, 200);
+  }, 1500);
 }
 
 function clearRemoteMessageProtection(messageId) {
@@ -2658,5 +2658,6 @@ log('- mpDebug.showRemoteCache() 查看远程上下文缓存');
 log('- mpDebug.clearRemoteCache() 清除远程上下文缓存');
 
 log('- mpDebug.restoreRemote() 手动恢复远程消息');
+
 
 
