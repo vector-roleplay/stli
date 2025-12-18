@@ -405,18 +405,13 @@ const RemoteMessageGuard = {
       
       guard.isRestoring = true;
       
-      const reRendered = InternalRenderer.render(guard.html, messageId);
-      element.innerHTML = reRendered;
-      
       InternalRenderer.setupIframeAutoHeight(element);
       
-      if (reRendered !== guard.html) {
-        guard.html = reRendered;
-        const chat = getChat();
-        if (chat[messageId]?.extra) {
-          chat[messageId].extra.remoteFormattedHtml = reRendered;
-        }
-      }
+      // ✅ 直接用存储的HTML，不再调用渲染器！
+  element.innerHTML = guard.html;
+  
+  // 设置 iframe 自适应高度
+  InternalRenderer.setupIframeAutoHeight(element);
       
       guard.isRestoring = false;
     });
@@ -2888,4 +2883,5 @@ log('缓存命令:');
 log('  mpDebug.showRemoteCache() - 显示远程上下文');
 log('  mpDebug.clearRemoteCache() - 清除远程上下文');
 log('  mpDebug.showSentData() - 显示已发送的数据');
+
 log('========================================');
