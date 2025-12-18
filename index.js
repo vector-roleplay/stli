@@ -176,32 +176,34 @@ ${content}
   },
   
   createRenderStructure(preElement, htmlContent, messageId, index) {
-    const container = document.createElement('div');
-    container.className = 'mp-render';
-    
-    const collapseBtn = document.createElement('div');
-    collapseBtn.className = 'mp-collapse-button mp-hidden';
-    collapseBtn.textContent = '显示前端代码块';
-    
-    const hiddenPre = preElement.cloneNode(true);
-    hiddenPre.classList.add('mp-hidden');
-    
-    const iframe = document.createElement('iframe');
-    iframe.id = 'mp-message--' + messageId + '--' + index;
-    iframe.className = 'mp-iframe';
-    iframe.setAttribute('loading', 'lazy');
-    iframe.setAttribute('frameborder', '0');
-    iframe.style.cssText = 'width: 100%; border: none; min-height: 200px; display: block;';
-    iframe.srcdoc = this.wrapHtmlDocument(htmlContent);
-    
-    container.appendChild(collapseBtn);
-    container.appendChild(hiddenPre);
-    container.appendChild(iframe);
-    
-    preElement.parentNode.replaceChild(container, preElement);
-    
-    return container;
-  },
+  const container = document.createElement('div');
+  container.className = 'mp-render';
+  
+  // 把原始代码存到 data 属性（不用 <pre> 标签）
+  try {
+    container.dataset.originalCode = btoa(encodeURIComponent(htmlContent));
+  } catch (e) {
+    container.dataset.originalCode = '';
+  }
+  container.dataset.messageId = String(messageId);
+  container.dataset.index = String(index);
+  
+  // 只创建 iframe，不保留 <pre>
+  const iframe = document.createElement('iframe');
+  iframe.id = 'mp-message--' + messageId + '--' + index;
+  iframe.className = 'mp-iframe';
+  iframe.setAttribute('loading', 'lazy');
+  iframe.setAttribute('frameborder', '0');
+  iframe.style.cssText = 'width: 100%; border: none; min-height: 200px; display: block;';
+  iframe.srcdoc = this.wrapHtmlDocument(htmlContent);
+  
+  // 只添加 iframe
+  container.appendChild(iframe);
+  
+  preElement.parentNode.replaceChild(container, preElement);
+  
+  return container;
+},
   
   render(rawHtml, messageId = 0) {
     if (!rawHtml) return '';
@@ -375,8 +377,9 @@ function hasOurRenderTraces(element) {
 }
 
 // ========================================
-// 远程消息保护器（零延迟）
+// 远程消息保护器
 // ========================================
+
 
 const RemoteMessageGuard = {
   protected: new Map(),
@@ -396,32 +399,42 @@ const RemoteMessageGuard = {
       observer: null
     };
     
-    const self = this;
-    
     guard.observer = new MutationObserver(function(mutations) {
       if (guard.isRestoring) return;
       
-      const currentHtml = element.innerHTML;
-      if (currentHtml === guard.html) return;
+      // 检查是否有酒馆助手的痕迹
+      const hasTHTraces = element.querySelector('.TH-render') !== null || 
+                           element.querySelector('iframe[id^="TH-message--"]') !== null ||
+                           element.querySelector('.TH-collapse-code-block-button') !== null;
       
-      log('🛡️ 保护器检测到消息 #' + messageId + ' 被篡改，恢复中...');
-      
-      guard.isRestoring = true;
-      
-      const reRendered = InternalRenderer.render(guard.html, messageId);
-      element.innerHTML = reRendered;
-      
-      InternalRenderer.setupIframeAutoHeight(element);
-      
-      if (reRendered !== guard.html) {
-        guard.html = reRendered;
-        const chat = getChat();
-        if (chat[messageId]?.extra) {
-          chat[messageId].extra.remoteFormattedHtml = reRendered;
-        }
+      if (hasTHTraces) {
+        log('🛡️ 检测到酒馆助手痕迹 #' + messageId + '，清除并恢复...');
+        
+        guard.isRestoring = true;
+        element.innerHTML = guard.html;
+        InternalRenderer.setupIframeAutoHeight(element);
+        
+        setTimeout(function() {
+          guard.isRestoring = false;
+        }, 100);
+        return;
       }
       
-      guard.isRestoring = false;
+      // 检查我们的结构是否被破坏
+      const hasOurStructure = element.querySelector('.mp-render') !== null || 
+                               element.querySelector('iframe.mp-iframe') !== null;
+      
+      if (hasOurStructure) return;
+      
+      log('🛡️ 结构被破坏 #' + messageId + '，恢复中...');
+      
+      guard.isRestoring = true;
+      element.innerHTML = guard.html;
+      InternalRenderer.setupIframeAutoHeight(element);
+      
+      setTimeout(function() {
+        guard.isRestoring = false;
+      }, 100);
     });
     
     guard.observer.observe(element, {
@@ -443,7 +456,9 @@ const RemoteMessageGuard = {
   },
   
   clear() {
-    this.protected.forEach(guard => guard.observer?.disconnect());
+    this.protected.forEach(function(guard) {
+      guard.observer?.disconnect();
+    });
     this.protected.clear();
   },
   
@@ -451,7 +466,6 @@ const RemoteMessageGuard = {
     return this.protected.has(messageId);
   }
 };
-
 // ========================================
 // 函数锁
 // ========================================
@@ -2966,4 +2980,5 @@ log('  mpDebug.showRemoteCache() - 显示远程上下文');
 log('  mpDebug.showWorldInfoCache() - 显示世界书缓存');
 log('  mpDebug.clearRemoteCache() - 清除远程上下文');
 log('  mpDebug.showSentData() - 显示已发送的数据');
+
 log('========================================');
