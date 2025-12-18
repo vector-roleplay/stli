@@ -372,7 +372,7 @@ function hasOurRenderTraces(element) {
 }
 
 // ========================================
-// 远程消息保护器（零延迟）
+// 远程消息保护器
 // ========================================
 
 const RemoteMessageGuard = {
@@ -393,27 +393,25 @@ const RemoteMessageGuard = {
       observer: null
     };
     
-    const self = this;
-    
     guard.observer = new MutationObserver(function(mutations) {
       if (guard.isRestoring) return;
       
-      const currentHtml = element.innerHTML;
-      if (currentHtml === guard.html) return;
+      // 检查我们的结构是否还存在
+      const hasOurStructure = element.querySelector('.mp-render') !== null || 
+                               element.querySelector('iframe.mp-iframe') !== null;
       
-      log('🛡️ 保护器检测到消息 #' + messageId + ' 被篡改，恢复中...');
+      if (hasOurStructure) return;
+      
+      log('🛡️ 保护器检测到消息 #' + messageId + ' 结构被破坏，恢复中...');
       
       guard.isRestoring = true;
       
+      element.innerHTML = guard.html;
       InternalRenderer.setupIframeAutoHeight(element);
       
-      // ✅ 直接用存储的HTML，不再调用渲染器！
-  element.innerHTML = guard.html;
-  
-  // 设置 iframe 自适应高度
-  InternalRenderer.setupIframeAutoHeight(element);
-      
-      guard.isRestoring = false;
+      setTimeout(function() {
+        guard.isRestoring = false;
+      }, 100);
     });
     
     guard.observer.observe(element, {
@@ -435,7 +433,9 @@ const RemoteMessageGuard = {
   },
   
   clear() {
-    this.protected.forEach(guard => guard.observer?.disconnect());
+    this.protected.forEach(function(guard) {
+      guard.observer?.disconnect();
+    });
     this.protected.clear();
   },
   
@@ -443,7 +443,6 @@ const RemoteMessageGuard = {
     return this.protected.has(messageId);
   }
 };
-
 // ========================================
 // 函数锁
 // ========================================
@@ -2885,3 +2884,4 @@ log('  mpDebug.clearRemoteCache() - 清除远程上下文');
 log('  mpDebug.showSentData() - 显示已发送的数据');
 
 log('========================================');
+
