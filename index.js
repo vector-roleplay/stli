@@ -1,5 +1,5 @@
 // ========================================
-// 酒馆联机扩展 v2.9.0
+// 酒馆联机扩展 v2.9.1
 // 服务器: wss://chu.zeabur.app
 // 核心改动:
 //   - 删除追踪系统，代码瘦身
@@ -18,7 +18,7 @@ const extensionName = 'stli';
 const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
 
 // ========== 版本信息 ==========
-const CURRENT_VERSION = '2.9.0';
+const CURRENT_VERSION = '2.9.1';
 
 const defaultSettings = {
   serverUrl: 'wss://chu.zeabur.app',
@@ -458,9 +458,8 @@ const RemoteMessageGuard = {
       
       guard.isRestoring = true;
       
-      // 在内部重新渲染后恢复
-      const reRendered = InternalRenderer.render(guard.html, messageId);
-      element.innerHTML = reRendered;
+      // 直接用存储的HTML，不再调用渲染器
+element.innerHTML = guard.html;
       
       // 设置 iframe 自适应高度
       InternalRenderer.setupIframeAutoHeight(element);
