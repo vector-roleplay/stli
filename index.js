@@ -194,7 +194,7 @@ ${content}
     iframe.className = 'mp-iframe';
     iframe.setAttribute('loading', 'lazy');
     iframe.setAttribute('frameborder', '0');
-    iframe.style.cssText = 'width: 100%; border: none; min-height: 200px; display: block;';
+    iframe.style.cssText = 'width: 100%; border: none; display: block;';
     iframe.srcdoc = this.wrapHtmlDocument(htmlContent);
     
     // 只添加 iframe，不添加 <pre>！
