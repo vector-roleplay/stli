@@ -1,5 +1,5 @@
 // ========================================
-// 酒馆联机扩展 v2.9.1
+// 酒馆联机扩展 v2.9.2
 // 服务器: wss://chu.zeabur.app
 // 核心改动:
 //   - 删除追踪系统，代码瘦身
@@ -18,7 +18,7 @@ const extensionName = 'stli';
 const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
 
 // ========== 版本信息 ==========
-const CURRENT_VERSION = '2.9.1';
+const CURRENT_VERSION = '2.9.2';
 
 const defaultSettings = {
   serverUrl: 'wss://chu.zeabur.app',
@@ -140,7 +140,7 @@ function isFrontend(content) {
 }
 
 // ========================================
-// 内部沙箱渲染器（模仿酒馆助手效果）
+// 内部沙箱渲染器（防止酒馆助手重复渲染）
 // ========================================
 
 const InternalRenderer = {
@@ -171,21 +171,22 @@ ${content}
   },
   
   /**
-   * 在沙箱内创建渲染结构（模仿酒馆助手但用自己的命名）
+   * 在沙箱内创建渲染结构
+   * 注意：不保留 <pre> 标签，防止酒馆助手重复渲染
    */
   createRenderStructure(preElement, htmlContent, messageId, index) {
-    // 创建包装容器（类似 TH-render）
+    // 创建包装容器
     const container = document.createElement('div');
     container.className = 'mp-render';
     
-    // 创建折叠按钮
-    const collapseBtn = document.createElement('div');
-    collapseBtn.className = 'mp-collapse-button mp-hidden';
-    collapseBtn.textContent = '显示前端代码块';
-    
-    // 克隆并隐藏原始 pre
-    const hiddenPre = preElement.cloneNode(true);
-    hiddenPre.classList.add('mp-hidden');
+    // 存储原始代码到 data 属性（Base64编码防止特殊字符问题）
+    try {
+      container.dataset.originalCode = btoa(encodeURIComponent(htmlContent));
+    } catch (e) {
+      container.dataset.originalCode = '';
+    }
+    container.dataset.messageId = String(messageId);
+    container.dataset.index = String(index);
     
     // 创建 iframe
     const iframe = document.createElement('iframe');
@@ -196,9 +197,7 @@ ${content}
     iframe.style.cssText = 'width: 100%; border: none; min-height: 200px; display: block;';
     iframe.srcdoc = this.wrapHtmlDocument(htmlContent);
     
-    // 组装结构
-    container.appendChild(collapseBtn);
-    container.appendChild(hiddenPre);
+    // 只添加 iframe，不添加 <pre>！
     container.appendChild(iframe);
     
     // 替换原 pre
@@ -209,14 +208,11 @@ ${content}
   
   /**
    * 在内存沙箱中渲染 HTML
-   * @param {string} rawHtml - 原始格式化 HTML
-   * @param {number} messageId - 消息ID
-   * @returns {string} - 渲染后的完整 HTML（包含 iframe）
    */
-  render(rawHtml, messageId = 0) {
+  render(rawHtml, messageId) {
     if (!rawHtml) return '';
     
-    // 创建内存沙箱（不挂载到 DOM）
+    // 创建内存沙箱
     const sandbox = document.createElement('div');
     sandbox.innerHTML = rawHtml;
     
@@ -228,22 +224,19 @@ ${content}
       const code = pre.querySelector('code');
       if (!code) return;
       
-      // 提取内容（.textContent 自动解码 HTML 实体）
       const content = code.textContent;
       if (!isFrontend(content)) return;
       
-      // 在沙箱内创建渲染结构
+      // 创建渲染结构（会移除 pre 标签）
       this.createRenderStructure(pre, content, messageId, renderIndex);
       renderIndex++;
     });
     
-    // 返回渲染后的完整 HTML
     return sandbox.innerHTML;
   },
   
   /**
    * 处理 iframe 加载后的高度调整
-   * 需要在 DOM 上调用
    */
   setupIframeAutoHeight(container) {
     if (!container) return;
@@ -260,14 +253,12 @@ ${content}
         }
       };
       
-      // 如果已经加载完成，立即调整
       if (iframe.contentDocument && iframe.contentDocument.readyState === 'complete') {
         iframe.onload();
       }
     });
   }
 };
-
 // ========================================
 // 清理 HTML - 移除酒馆助手所有痕迹
 // ========================================
