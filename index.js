@@ -1,9 +1,11 @@
 // ========================================
-// 酒馆联机扩展 v2.8.0
+// 酒馆联机扩展 v2.9.0
 // 服务器: wss://chu.zeabur.app
 // 核心改动:
 //   - 删除追踪系统，代码瘦身
-//   - 内部沙箱渲染器
+//   - 内部沙箱渲染器（模仿酒馆助手）
+//   - 完整清理酒馆助手痕迹
+//   - 等待酒馆助手处理完再捕获
 //   - 零延迟保护器
 //   - 函数锁防护
 // ========================================
@@ -16,7 +18,7 @@ const extensionName = 'stli';
 const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
 
 // ========== 版本信息 ==========
-const CURRENT_VERSION = '2.8.0';
+const CURRENT_VERSION = '2.9.0';
 
 const defaultSettings = {
   serverUrl: 'wss://chu.zeabur.app',
@@ -73,296 +75,11 @@ let processedMsgCache = new Set();
 let remoteStreamMap = new Map();
 let isGenerating = false;
 
-// ========== 发送方捕获状态 ==========
-let pendingCapture = {
-  enabled: false,
-  messageId: null,
-  captured: false,
-  html: null
-};
-
 // ========== DOM 观察器 ==========
 let chatObserver = null;
 
 // ========== 远程上下文缓存 ==========
 let remoteContextCache = new Map();
-
-// ========================================
-// 内部沙箱渲染器
-// ========================================
-
-const InternalRenderer = {
-  
-  /**
-   * 检测内容是否为前端代码
-   */
-  isFrontend(content) {
-    if (!content) return false;
-    return ['html>', '<head>', '<body'].some(tag => content.includes(tag));
-  },
-  
-  /**
-   * 包装为完整的 HTML 文档
-   */
-  wrapHtmlDocument(content) {
-    if (!content) return '';
-    const trimmed = content.trim().toLowerCase();
-    if (trimmed.startsWith('<!doctype') || trimmed.startsWith('<html')) {
-      return content;
-    }
-    return `<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<style>
-*, *::before, *::after { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; overflow: hidden; max-width: 100%; }
-</style>
-</head>
-<body>
-${content}
-</body>
-</html>`;
-  },
-  
-  /**
-   * 在沙箱内创建 iframe 结构
-   */
-  createIframeStructure(preElement, htmlContent) {
-    // 创建容器
-    const container = document.createElement('div');
-    container.className = 'mp-frontend-render';
-    container.style.cssText = 'width: 100%; position: relative;';
-    
-    // 克隆并隐藏原始 pre
-    const hiddenPre = preElement.cloneNode(true);
-    hiddenPre.style.display = 'none';
-    hiddenPre.className = (hiddenPre.className || '') + ' mp-original-code';
-    
-    // 创建 iframe
-    const iframe = document.createElement('iframe');
-    iframe.className = 'mp-frontend-iframe';
-    iframe.style.cssText = 'width: 100%; border: none; min-height: 200px; display: block;';
-    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
-    iframe.srcdoc = this.wrapHtmlDocument(htmlContent);
-    
-    // 组装
-    container.appendChild(hiddenPre);
-    container.appendChild(iframe);
-    
-    // 替换原 pre
-    preElement.parentNode.replaceChild(container, preElement);
-  },
-  
-  /**
-   * 在内存沙箱中渲染 HTML
-   * @param {string} rawHtml - 原始格式化 HTML
-   * @returns {string} - 渲染后的完整 HTML（包含 iframe）
-   */
-  render(rawHtml) {
-    if (!rawHtml) return '';
-    
-    // 创建内存沙箱（不挂载到 DOM）
-    const sandbox = document.createElement('div');
-    sandbox.innerHTML = rawHtml;
-    
-    // 查找所有 pre 标签
-    const preTags = sandbox.querySelectorAll('pre');
-    
-    preTags.forEach(pre => {
-      const code = pre.querySelector('code');
-      if (!code) return;
-      
-      // 提取内容（.textContent 自动解码 HTML 实体）
-      const content = code.textContent;
-      if (!this.isFrontend(content)) return;
-      
-      // 在沙箱内创建 iframe 结构
-      this.createIframeStructure(pre, content);
-    });
-    
-    // 返回渲染后的完整 HTML
-    return sandbox.innerHTML;
-  },
-  
-  /**
-   * 处理 iframe 加载后的高度调整
-   * 需要在 DOM 上调用
-   */
-  setupIframeAutoHeight(container) {
-    if (!container) return;
-    
-    const iframes = container.querySelectorAll('.mp-frontend-iframe');
-    iframes.forEach(iframe => {
-      iframe.onload = function() {
-        try {
-          const doc = iframe.contentDocument || iframe.contentWindow.document;
-          const height = doc.documentElement.scrollHeight || doc.body.scrollHeight;
-          iframe.style.height = Math.max(height, 100) + 'px';
-        } catch (e) {
-          iframe.style.height = '400px';
-        }
-      };
-      
-      // 如果已经加载完成，立即调整
-      if (iframe.contentDocument && iframe.contentDocument.readyState === 'complete') {
-        iframe.onload();
-      }
-    });
-  }
-};
-
-// ========================================
-// 远程消息保护器（零延迟）
-// ========================================
-
-const RemoteMessageGuard = {
-  // messageId -> { html, observer, isRestoring }
-  protected: new Map(),
-  
-  /**
-   * 保护一条消息
-   * @param {number} messageId 
-   * @param {string} renderedHtml - 已渲染完成的 HTML
-   */
-  protect(messageId, renderedHtml) {
-    // 清理旧保护器
-    this.unprotect(messageId);
-    
-    const element = document.querySelector(`.mes[mesid="${messageId}"] .mes_text`);
-    if (!element) {
-      log('保护器：找不到元素 #' + messageId);
-      return;
-    }
-    
-    const guard = {
-      html: renderedHtml,
-      isRestoring: false,
-      observer: null
-    };
-    
-    const self = this;
-    
-    guard.observer = new MutationObserver(function(mutations) {
-      // 防止恢复过程中触发
-      if (guard.isRestoring) return;
-      
-      const currentHtml = element.innerHTML;
-      
-      // 内容相同，无需处理
-      if (currentHtml === guard.html) return;
-      
-      // 检测到篡改
-      log('🛡️ 保护器检测到消息 #' + messageId + ' 被篡改，恢复中...');
-      
-      guard.isRestoring = true;
-      
-      // 在内部重新渲染后恢复
-      const reRendered = InternalRenderer.render(guard.html);
-      element.innerHTML = reRendered;
-      
-      // 设置 iframe 自适应高度
-      InternalRenderer.setupIframeAutoHeight(element);
-      
-      // 更新存储（如果渲染产生了变化）
-      if (reRendered !== guard.html) {
-        guard.html = reRendered;
-        // 同步更新 chat 数组
-        const chat = getChat();
-        if (chat[messageId]?.extra) {
-          chat[messageId].extra.remoteFormattedHtml = reRendered;
-        }
-      }
-      
-      guard.isRestoring = false;
-    });
-    
-    // 立即开始观察（零延迟）
-    guard.observer.observe(element, {
-      childList: true,
-      subtree: true,
-      characterData: true
-    });
-    
-    this.protected.set(messageId, guard);
-    log('✅ 保护器已激活 #' + messageId);
-  },
-  
-  /**
-   * 取消保护
-   */
-  unprotect(messageId) {
-    const guard = this.protected.get(messageId);
-    if (guard) {
-      guard.observer?.disconnect();
-      this.protected.delete(messageId);
-    }
-  },
-  
-  /**
-   * 清除所有保护器
-   */
-  clear() {
-    this.protected.forEach(guard => guard.observer?.disconnect());
-    this.protected.clear();
-  },
-  
-  /**
-   * 检查是否受保护
-   */
-  isProtected(messageId) {
-    return this.protected.has(messageId);
-  }
-};
-
-// ========================================
-// 函数锁
-// ========================================
-
-function setupFunctionLocks() {
-  const ctx = getContext();
-  
-  if (ctx._mpFunctionLocksInstalled) {
-    log('函数锁已安装，跳过');
-    return;
-  }
-  
-  // 锁定 updateMessageBlock
-  const originalUpdateMessageBlock = ctx.updateMessageBlock;
-  
-  if (originalUpdateMessageBlock) {
-    ctx.updateMessageBlock = function(messageId, message, options = {}) {
-      const chat = getChat();
-      const msg = chat[messageId];
-      
-      // 如果是远程消息，完全拦截
-      if (msg?.extra?.isRemote && msg?.extra?.remoteFormattedHtml) {
-        log('🔒 函数锁拦截 updateMessageBlock #' + messageId);
-        
-        // 不调用原函数，用内部渲染恢复
-        const element = document.querySelector(`.mes[mesid="${messageId}"] .mes_text`);
-        if (element) {
-          const rendered = InternalRenderer.render(msg.extra.remoteFormattedHtml);
-          element.innerHTML = rendered;
-          InternalRenderer.setupIframeAutoHeight(element);
-          
-          // 更新存储
-          msg.extra.remoteFormattedHtml = rendered;
-        }
-        
-        return; // 不执行原函数
-      }
-      
-      // 非远程消息，正常执行
-      return originalUpdateMessageBlock.call(this, messageId, message, options);
-    };
-    
-    log('🔒 已锁定 updateMessageBlock');
-  }
-  
-  ctx._mpFunctionLocksInstalled = true;
-}
 
 // ========== 工具函数 ==========
 
@@ -401,7 +118,438 @@ function throttle(fn, delay) {
   };
 }
 
-// ========== Token 存储管理 ==========
+function getChat() {
+  const ctx = getContext();
+  return ctx.chat || [];
+}
+
+function getMessageTimeStamp() {
+  if (typeof humanizedDateTime === 'function') {
+    return humanizedDateTime();
+  }
+  return new Date().toLocaleString();
+}
+
+// ========================================
+// 前端代码检测（与酒馆助手相同逻辑）
+// ========================================
+
+function isFrontend(content) {
+  if (!content) return false;
+  return ['html>', '<head>', '<body'].some(tag => content.includes(tag));
+}
+
+// ========================================
+// 内部沙箱渲染器（模仿酒馆助手效果）
+// ========================================
+
+const InternalRenderer = {
+  
+  /**
+   * 包装为完整的 HTML 文档
+   */
+  wrapHtmlDocument(content) {
+    if (!content) return '';
+    const trimmed = content.trim().toLowerCase();
+    if (trimmed.startsWith('<!doctype') || trimmed.startsWith('<html')) {
+      return content;
+    }
+    return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; overflow: hidden; max-width: 100%; }
+</style>
+</head>
+<body>
+${content}
+</body>
+</html>`;
+  },
+  
+  /**
+   * 在沙箱内创建渲染结构（模仿酒馆助手但用自己的命名）
+   */
+  createRenderStructure(preElement, htmlContent, messageId, index) {
+    // 创建包装容器（类似 TH-render）
+    const container = document.createElement('div');
+    container.className = 'mp-render';
+    
+    // 创建折叠按钮
+    const collapseBtn = document.createElement('div');
+    collapseBtn.className = 'mp-collapse-button mp-hidden';
+    collapseBtn.textContent = '显示前端代码块';
+    
+    // 克隆并隐藏原始 pre
+    const hiddenPre = preElement.cloneNode(true);
+    hiddenPre.classList.add('mp-hidden');
+    
+    // 创建 iframe
+    const iframe = document.createElement('iframe');
+    iframe.id = 'mp-message--' + messageId + '--' + index;
+    iframe.className = 'mp-iframe';
+    iframe.setAttribute('loading', 'lazy');
+    iframe.setAttribute('frameborder', '0');
+    iframe.style.cssText = 'width: 100%; border: none; min-height: 200px; display: block;';
+    iframe.srcdoc = this.wrapHtmlDocument(htmlContent);
+    
+    // 组装结构
+    container.appendChild(collapseBtn);
+    container.appendChild(hiddenPre);
+    container.appendChild(iframe);
+    
+    // 替换原 pre
+    preElement.parentNode.replaceChild(container, preElement);
+    
+    return container;
+  },
+  
+  /**
+   * 在内存沙箱中渲染 HTML
+   * @param {string} rawHtml - 原始格式化 HTML
+   * @param {number} messageId - 消息ID
+   * @returns {string} - 渲染后的完整 HTML（包含 iframe）
+   */
+  render(rawHtml, messageId = 0) {
+    if (!rawHtml) return '';
+    
+    // 创建内存沙箱（不挂载到 DOM）
+    const sandbox = document.createElement('div');
+    sandbox.innerHTML = rawHtml;
+    
+    // 查找所有 pre 标签
+    const preTags = sandbox.querySelectorAll('pre');
+    let renderIndex = 0;
+    
+    preTags.forEach(pre => {
+      const code = pre.querySelector('code');
+      if (!code) return;
+      
+      // 提取内容（.textContent 自动解码 HTML 实体）
+      const content = code.textContent;
+      if (!isFrontend(content)) return;
+      
+      // 在沙箱内创建渲染结构
+      this.createRenderStructure(pre, content, messageId, renderIndex);
+      renderIndex++;
+    });
+    
+    // 返回渲染后的完整 HTML
+    return sandbox.innerHTML;
+  },
+  
+  /**
+   * 处理 iframe 加载后的高度调整
+   * 需要在 DOM 上调用
+   */
+  setupIframeAutoHeight(container) {
+    if (!container) return;
+    
+    const iframes = container.querySelectorAll('.mp-iframe');
+    iframes.forEach(iframe => {
+      iframe.onload = function() {
+        try {
+          const doc = iframe.contentDocument || iframe.contentWindow.document;
+          const height = doc.documentElement.scrollHeight || doc.body.scrollHeight;
+          iframe.style.height = Math.max(height, 100) + 'px';
+        } catch (e) {
+          iframe.style.height = '400px';
+        }
+      };
+      
+      // 如果已经加载完成，立即调整
+      if (iframe.contentDocument && iframe.contentDocument.readyState === 'complete') {
+        iframe.onload();
+      }
+    });
+  }
+};
+
+// ========================================
+// 清理 HTML - 移除酒馆助手所有痕迹
+// ========================================
+
+function cleanHtmlForSync(html) {
+  const temp = document.createElement('div');
+  temp.innerHTML = html;
+  
+  // ========== 1. 移除酒馆助手的 iframe ==========
+  temp.querySelectorAll('iframe[id^="TH-message--"]').forEach(function(iframe) {
+    iframe.remove();
+  });
+  
+  // ========== 2. 移除酒馆助手的折叠按钮 ==========
+  temp.querySelectorAll('.TH-collapse-code-block-button').forEach(function(btn) {
+    btn.remove();
+  });
+  
+  // ========== 3. 解包酒馆助手的 TH-render 容器 ==========
+  temp.querySelectorAll('.TH-render').forEach(function(wrapper) {
+    const children = wrapper.querySelectorAll(':scope > :not(iframe)');
+    const fragment = document.createDocumentFragment();
+    
+    children.forEach(function(child) {
+      // 移除 hidden! class
+      child.classList.remove('hidden!');
+      fragment.appendChild(child.cloneNode(true));
+    });
+    
+    wrapper.replaceWith(fragment);
+  });
+  
+  // ========== 4. 移除我们自己的渲染容器（如果有） ==========
+  temp.querySelectorAll('.mp-render').forEach(function(wrapper) {
+    const pre = wrapper.querySelector('pre');
+    if (pre) {
+      pre.classList.remove('mp-hidden');
+      wrapper.replaceWith(pre);
+    } else {
+      wrapper.remove();
+    }
+  });
+  
+  // ========== 5. 移除我们的 iframe ==========
+  temp.querySelectorAll('iframe[id^="mp-message--"]').forEach(function(iframe) {
+    iframe.remove();
+  });
+  
+  // ========== 6. 移除我们的折叠按钮 ==========
+  temp.querySelectorAll('.mp-collapse-button').forEach(function(btn) {
+    btn.remove();
+  });
+  
+  // ========== 7. 清理所有元素的特殊 class ==========
+  temp.querySelectorAll('*').forEach(function(el) {
+    // 移除 hidden! class
+    el.classList.remove('hidden!');
+    // 移除 mp-hidden class
+    el.classList.remove('mp-hidden');
+    // 移除 w-full class（酒馆助手 iframe 的 tailwind class）
+    el.classList.remove('w-full');
+    
+    // 移除所有 TH- 开头的 class
+    const classes = Array.from(el.classList);
+    classes.forEach(function(cls) {
+      if (cls.startsWith('TH-') || cls.startsWith('th-') || cls.startsWith('mp-')) {
+        el.classList.remove(cls);
+      }
+    });
+    
+    // 移除所有 data-* 属性
+    Array.from(el.attributes).forEach(function(attr) {
+      if (attr.name.startsWith('data-')) {
+        el.removeAttribute(attr.name);
+      }
+    });
+  });
+  
+  // ========== 8. 移除代码复制按钮 ==========
+  temp.querySelectorAll('.code-copy, .fa-copy').forEach(function(btn) {
+    btn.remove();
+  });
+  
+  // ========== 9. 移除 hljs 行号 ==========
+  temp.querySelectorAll('.hljs-ln, .hljs-line-numbers').forEach(function(el) {
+    el.remove();
+  });
+  
+  // ========== 10. 清理 blob URL 和本地 URL ==========
+  temp.querySelectorAll('*').forEach(function(el) {
+    ['src', 'href', 'data', 'poster'].forEach(function(attr) {
+      if (el.hasAttribute(attr)) {
+        const val = el.getAttribute(attr);
+        if (val && (
+          val.startsWith('blob:') || 
+          val.includes('://localhost') || 
+          val.includes('://127.0.0.1') || 
+          val.includes('://192.168.')
+        )) {
+          el.removeAttribute(attr);
+        }
+      }
+    });
+    
+    // 清理 style 中的 URL
+    if (el.hasAttribute('style')) {
+      let style = el.getAttribute('style');
+      style = style.replace(/url\s*\(\s*["']?blob:[^)]+["']?\s*\)/gi, '');
+      style = style.replace(/url\s*\(\s*["']?https?:\/\/(localhost|127\.0\.0\.1|192\.168\.[^)]+)["']?\s*\)/gi, '');
+      if (style.trim()) {
+        el.setAttribute('style', style);
+      } else {
+        el.removeAttribute('style');
+      }
+    }
+  });
+  
+  // ========== 11. 移除危险标签 ==========
+  temp.querySelectorAll('base, object, embed, script').forEach(function(el) {
+    el.remove();
+  });
+  
+  // ========== 12. 清理空的 class 和 style 属性 ==========
+  temp.querySelectorAll('*').forEach(function(el) {
+    if (el.hasAttribute('class') && !el.className.trim()) {
+      el.removeAttribute('class');
+    }
+    if (el.hasAttribute('style') && !el.getAttribute('style').trim()) {
+      el.removeAttribute('style');
+    }
+  });
+  
+  return temp.innerHTML;
+}
+
+/**
+ * 检测是否有酒馆助手痕迹
+ */
+function hasTavernHelperTraces(element) {
+  if (!element) return false;
+  return element.querySelector('.TH-render, .TH-collapse-code-block-button, iframe[id^="TH-message--"]') !== null;
+}
+
+/**
+ * 检测是否有我们的渲染痕迹
+ */
+function hasOurRenderTraces(element) {
+  if (!element) return false;
+  return element.querySelector('.mp-render, iframe[id^="mp-message--"]') !== null;
+}
+
+// ========================================
+// 远程消息保护器（零延迟）
+// ========================================
+
+const RemoteMessageGuard = {
+  protected: new Map(),
+  
+  /**
+   * 保护一条消息
+   * @param {number} messageId 
+   * @param {string} renderedHtml - 已渲染完成的 HTML
+   */
+  protect(messageId, renderedHtml) {
+    this.unprotect(messageId);
+    
+    const element = document.querySelector(`.mes[mesid="${messageId}"] .mes_text`);
+    if (!element) {
+      log('保护器：找不到元素 #' + messageId);
+      return;
+    }
+    
+    const guard = {
+      html: renderedHtml,
+      isRestoring: false,
+      observer: null
+    };
+    
+    const self = this;
+    
+    guard.observer = new MutationObserver(function(mutations) {
+      if (guard.isRestoring) return;
+      
+      const currentHtml = element.innerHTML;
+      if (currentHtml === guard.html) return;
+      
+      log('🛡️ 保护器检测到消息 #' + messageId + ' 被篡改，恢复中...');
+      
+      guard.isRestoring = true;
+      
+      // 在内部重新渲染后恢复
+      const reRendered = InternalRenderer.render(guard.html, messageId);
+      element.innerHTML = reRendered;
+      
+      // 设置 iframe 自适应高度
+      InternalRenderer.setupIframeAutoHeight(element);
+      
+      // 更新存储
+      if (reRendered !== guard.html) {
+        guard.html = reRendered;
+        const chat = getChat();
+        if (chat[messageId]?.extra) {
+          chat[messageId].extra.remoteFormattedHtml = reRendered;
+        }
+      }
+      
+      guard.isRestoring = false;
+    });
+    
+    guard.observer.observe(element, {
+      childList: true,
+      subtree: true,
+      characterData: true
+    });
+    
+    this.protected.set(messageId, guard);
+    log('✅ 保护器已激活 #' + messageId);
+  },
+  
+  unprotect(messageId) {
+    const guard = this.protected.get(messageId);
+    if (guard) {
+      guard.observer?.disconnect();
+      this.protected.delete(messageId);
+    }
+  },
+  
+  clear() {
+    this.protected.forEach(guard => guard.observer?.disconnect());
+    this.protected.clear();
+  },
+  
+  isProtected(messageId) {
+    return this.protected.has(messageId);
+  }
+};
+
+// ========================================
+// 函数锁
+// ========================================
+
+function setupFunctionLocks() {
+  const ctx = getContext();
+  
+  if (ctx._mpFunctionLocksInstalled) {
+    log('函数锁已安装，跳过');
+    return;
+  }
+  
+  const originalUpdateMessageBlock = ctx.updateMessageBlock;
+  
+  if (originalUpdateMessageBlock) {
+    ctx.updateMessageBlock = function(messageId, message, options = {}) {
+      const chat = getChat();
+      const msg = chat[messageId];
+      
+      if (msg?.extra?.isRemote && msg?.extra?.remoteFormattedHtml) {
+        log('🔒 函数锁拦截 updateMessageBlock #' + messageId);
+        
+        const element = document.querySelector(`.mes[mesid="${messageId}"] .mes_text`);
+        if (element) {
+          const rendered = InternalRenderer.render(msg.extra.remoteFormattedHtml, messageId);
+          element.innerHTML = rendered;
+          InternalRenderer.setupIframeAutoHeight(element);
+          msg.extra.remoteFormattedHtml = rendered;
+        }
+        
+        return;
+      }
+      
+      return originalUpdateMessageBlock.call(this, messageId, message, options);
+    };
+    
+    log('🔒 已锁定 updateMessageBlock');
+  }
+  
+  ctx._mpFunctionLocksInstalled = true;
+}
+
+// ========================================
+// Token 存储管理
+// ========================================
 
 function saveToken(token) {
   userToken = token;
@@ -441,7 +589,9 @@ function canAutoReconnect() {
   return true;
 }
 
-// ========== 重置所有状态 ==========
+// ========================================
+// 重置所有状态
+// ========================================
 
 function resetAllState() {
   isConnected = false;
@@ -453,7 +603,6 @@ function resetAllState() {
   remoteStreamMap.clear();
   remoteContextCache.clear();
   isGenerating = false;
-  pendingCapture = { enabled: false, messageId: null, captured: false, html: null };
   turnState = {
     currentSpeaker: null,
     speakerName: null,
@@ -468,14 +617,9 @@ function resetAllState() {
   unblockSendButton();
 }
 
-// ========== 获取聊天数组 ==========
-
-function getChat() {
-  const ctx = getContext();
-  return ctx.chat || [];
-}
-
-// ========== 获取用户名 ==========
+// ========================================
+// 获取用户名
+// ========================================
 
 function getUserName() {
   const ctx = getContext();
@@ -527,339 +671,6 @@ function waitForUserName(callback, maxRetries = 20, interval = 500) {
   }
   
   tryGet();
-}
-
-// ========== 获取时间戳 ==========
-
-function getMessageTimeStamp() {
-  if (typeof humanizedDateTime === 'function') {
-    return humanizedDateTime();
-  }
-  return new Date().toLocaleString();
-}
-
-// ========================================
-// 劫持 prepareOpenAIMessages
-// ========================================
-
-function setupPrepareMessagesHijack() {
-  if (window._prepareOpenAIMessagesHijacked) {
-    return;
-  }
-  
-  const originalPrepare = window.prepareOpenAIMessages;
-  
-  if (!originalPrepare) {
-    log('⚠️ 无法获取 prepareOpenAIMessages');
-    return;
-  }
-  
-  window.prepareOpenAIMessages = async function(params, dryRun) {
-    if (!dryRun && currentRoom && turnState.isMyTurn && isGenerating) {
-      try {
-        collectAndSendSyncData(params);
-      } catch (e) {
-        log('收集同步数据出错: ' + e);
-      }
-    }
-    
-    if (!dryRun && currentRoom && remoteContextCache.size > 0) {
-      try {
-        injectRemoteContext(params);
-      } catch (e) {
-        log('注入远程内容出错: ' + e);
-      }
-    }
-    
-    return await originalPrepare.call(this, params, dryRun);
-  };
-  
-  window._prepareOpenAIMessagesHijacked = true;
-  log('✅ 已劫持 prepareOpenAIMessages');
-}
-
-// ========================================
-// 收集并发送同步数据
-// ========================================
-
-function collectAndSendSyncData(params) {
-  const chat = getChat();
-  
-  const localChatHistory = chat
-    .filter(msg => !msg.extra?.isRemote && !msg.is_system)
-    .map(msg => ({
-      role: msg.is_user ? 'user' : 'assistant',
-      content: msg.mes,
-      name: msg.name,
-    }));
-  
-  const syncData = {
-    worldInfo: {
-      before: params.worldInfoBefore || '',
-      after: params.worldInfoAfter || '',
-    },
-    character: {
-      description: params.charDescription || '',
-      personality: params.charPersonality || '',
-      scenario: params.scenario || '',
-    },
-    chatHistory: localChatHistory,
-  };
-  
-  sendWS({
-    type: 'syncContext',
-    worldInfo: syncData.worldInfo,
-    character: syncData.character,
-    chatHistory: syncData.chatHistory,
-    senderName: userName,
-    timestamp: Date.now(),
-  });
-  
-  const lastUserMsg = localChatHistory.filter(m => m.role === 'user').pop();
-  if (lastUserMsg) {
-    sendWS({
-      type: 'syncUserMessage',
-      content: lastUserMsg.content,
-      userName: lastUserMsg.name,
-      senderName: userName,
-      timestamp: Date.now(),
-    });
-  }
-  
-  sendWS({ type: 'userMessageSent' });
-}
-
-// ========================================
-// 注入远程上下文
-// ========================================
-
-function injectRemoteContext(params) {
-  if (remoteContextCache.size === 0) return;
-  
-  let remoteWorldInfo = '';
-  let remoteCharacter = '';
-  let remoteChatHistory = [];
-  
-  remoteContextCache.forEach((data, odId) => {
-    const playerTag = `[来自 ${data.userName}]`;
-    
-    if (data.worldInfo) {
-      const wiBefore = data.worldInfo.before || '';
-      const wiAfter = data.worldInfo.after || '';
-      if (wiBefore || wiAfter) {
-        remoteWorldInfo += `\n${playerTag}\n${wiBefore}${wiAfter ? '\n' + wiAfter : ''}`;
-      }
-    }
-    
-    if (data.character) {
-      const charContent = [
-        data.character.description,
-        data.character.personality,
-        data.character.scenario,
-      ].filter(x => x).join('\n');
-      
-      if (charContent) {
-        remoteCharacter += `\n${playerTag}\n${charContent}`;
-      }
-    }
-    
-    if (data.chatHistory && data.chatHistory.length > 0) {
-      remoteChatHistory.push(...data.chatHistory);
-    }
-  });
-  
-  if (remoteWorldInfo) {
-    params.worldInfoAfter = (params.worldInfoAfter || '') + 
-      '\n\n【其他玩家的世界设定】' + remoteWorldInfo;
-  }
-  
-  if (remoteCharacter) {
-    params.scenario = (params.scenario || '') + 
-      '\n\n【其他玩家的角色信息】' + remoteCharacter;
-  }
-  
-  if (remoteChatHistory.length > 0) {
-    params.messages.push(...remoteChatHistory);
-  }
-}
-
-// ========================================
-// 处理远程同步上下文
-// ========================================
-
-function handleRemoteSyncContext(msg) {
-  const { senderId, senderName, worldInfo, character, chatHistory, timestamp } = msg;
-  
-  remoteContextCache.set(senderId, {
-    userName: senderName,
-    worldInfo: worldInfo,
-    character: character,
-    chatHistory: chatHistory,
-    timestamp: timestamp,
-  });
-  
-  log('收到远程上下文，来自: ' + senderName);
-}
-
-// ========================================
-// 劫持 updateMessageBlock（发送方捕获）
-// ========================================
-
-function hijackUpdateMessageBlock() {
-  const ctx = getContext();
-  const original = ctx.updateMessageBlock;
-  
-  if (!original) {
-    log('警告：找不到 updateMessageBlock');
-    return;
-  }
-  
-  if (ctx._updateMessageBlockHijacked) {
-    return;
-  }
-  
-  ctx.updateMessageBlock = function(messageId, message, options = {}) {
-    const chat = getChat();
-    const msg = chat[messageId];
-    
-    // 远程消息保护（函数锁逻辑）
-    if (msg?.extra?.isRemote && msg?.extra?.remoteFormattedHtml) {
-      log('🔒 拦截 updateMessageBlock #' + messageId);
-      
-      const element = document.querySelector(`.mes[mesid="${messageId}"] .mes_text`);
-      if (element) {
-        const rendered = InternalRenderer.render(msg.extra.remoteFormattedHtml);
-        element.innerHTML = rendered;
-        InternalRenderer.setupIframeAutoHeight(element);
-        msg.extra.remoteFormattedHtml = rendered;
-      }
-      
-      return;
-    }
-    
-    const result = original.call(this, messageId, message, options);
-    
-    // 发送方捕获逻辑
-    if (pendingCapture.enabled && 
-        pendingCapture.messageId === messageId && 
-        !pendingCapture.captured &&
-        msg && !msg.is_user && !msg.extra?.isRemote) {
-      
-      const element = document.querySelector(`.mes[mesid="${messageId}"] .mes_text`);
-      if (element) {
-        const html = element.innerHTML;
-        
-        if (html && html.length > 50 && !html.includes('<p>…</p>')) {
-          pendingCapture.captured = true;
-          pendingCapture.html = html;
-          log('📸 捕获成功 #' + messageId + '，长度: ' + html.length);
-        }
-      }
-    }
-    
-    return result;
-  };
-  
-  ctx._updateMessageBlockHijacked = true;
-  log('✅ 已劫持 updateMessageBlock');
-}
-
-// ========================================
-// 事件拦截器（备用捕获）
-// ========================================
-
-function setupEventInterceptor() {
-  const ctx = getContext();
-  
-  if (ctx.eventSource._mpIntercepted) {
-    return;
-  }
-  
-  const originalEmit = ctx.eventSource.emit.bind(ctx.eventSource);
-  
-  ctx.eventSource.emit = async function(eventType, ...args) {
-    
-    if (eventType === ctx.eventTypes.CHARACTER_MESSAGE_RENDERED) {
-      const messageId = args[0];
-      
-      if (pendingCapture.enabled && 
-          pendingCapture.messageId === messageId && 
-          !pendingCapture.captured) {
-        
-        const chat = getChat();
-        const msg = chat[messageId];
-        
-        if (msg && !msg.is_user && !msg.extra?.isRemote) {
-          const mesText = document.querySelector(`.mes[mesid="${messageId}"] .mes_text`);
-          
-          if (mesText) {
-            const html = mesText.innerHTML;
-            
-            if (html && html.length > 50 && !html.includes('<p>…</p>')) {
-              pendingCapture.captured = true;
-              pendingCapture.html = html;
-              log('📸 事件拦截捕获 #' + messageId);
-            }
-          }
-        }
-      }
-    }
-    
-    return originalEmit(eventType, ...args);
-  };
-  
-  ctx.eventSource._mpIntercepted = true;
-  log('✅ 事件拦截器已设置');
-}
-
-// ========================================
-// DOM 观察器（备用捕获）
-// ========================================
-
-function setupDOMObserver() {
-  const chatElement = document.getElementById('chat');
-  if (!chatElement) {
-    setTimeout(setupDOMObserver, 1000);
-    return;
-  }
-  
-  if (chatObserver) {
-    chatObserver.disconnect();
-  }
-  
-  chatObserver = new MutationObserver(function(mutations) {
-    if (!currentRoom || !turnState.isMyTurn || !isGenerating) return;
-    if (pendingCapture.captured) return;
-    
-    for (const mutation of mutations) {
-      if (mutation.target && mutation.target.classList && 
-          mutation.target.classList.contains('mes_text')) {
-        
-        const mesElement = mutation.target.closest('.mes');
-        if (!mesElement) continue;
-        
-        if (mesElement.getAttribute('data-remote') === 'true') continue;
-        
-        const messageId = parseInt(mesElement.getAttribute('mesid'));
-        if (isNaN(messageId)) continue;
-        
-        if (pendingCapture.enabled && pendingCapture.messageId === messageId && !pendingCapture.captured) {
-          const html = mutation.target.innerHTML;
-          if (html && html.length > 50 && !html.includes('<p>…</p>')) {
-            pendingCapture.captured = true;
-            pendingCapture.html = html;
-            log('📸 DOM观察器捕获 #' + messageId);
-          }
-        }
-      }
-    }
-  });
-  
-  chatObserver.observe(chatElement, { 
-    childList: true, 
-    subtree: true,
-    characterData: true
-  });
 }
 
 // ========================================
@@ -1030,10 +841,6 @@ function deleteTimeoutMessages(phase) {
   } catch(e) {}
 }
 
-// ========================================
-// 简单渲染函数（用于流式显示）
-// ========================================
-
 function simpleRender(text) {
   if (!text) return '';
   
@@ -1047,105 +854,101 @@ function simpleRender(text) {
 }
 
 // ========================================
-// 清理 HTML 用于远程同步
+// 等待酒馆助手处理完再捕获
 // ========================================
 
-function cleanHtmlForSync(html) {
-  const temp = document.createElement('div');
-  temp.innerHTML = html;
+function waitForTavernHelperThenCapture(messageId, lastMsg) {
+  const mesText = document.querySelector(`.mes[mesid="${messageId}"] .mes_text`);
+  if (!mesText) {
+    log('⚠️ 找不到消息元素');
+    finishCapture();
+    return;
+  }
   
-  // 处理 TH-render 包装器
-  const renders = temp.querySelectorAll('.TH-render');
-  renders.forEach(function(render) {
-    const pre = render.querySelector('pre');
-    if (pre) {
-      pre.classList.remove('hidden!');
-      pre.style.display = '';
-      render.replaceWith(pre);
-    } else {
-      render.remove();
+  let waitCount = 0;
+  const maxWait = 40; // 最多等待 2 秒
+  const checkInterval = 50;
+  
+  function checkAndCapture() {
+    waitCount++;
+    
+    // 检查内容是否有效（不是占位符）
+    const currentHtml = mesText.innerHTML;
+    const isPlaceholder = !currentHtml || 
+                          currentHtml.length < 50 || 
+                          currentHtml.includes('<p>…</p>') ||
+                          currentHtml.includes('<p>...</p>');
+    
+    if (isPlaceholder && waitCount < maxWait) {
+      setTimeout(checkAndCapture, checkInterval);
+      return;
     }
-  });
-  
-  // 处理我们自己的渲染容器
-  const mpRenders = temp.querySelectorAll('.mp-frontend-render');
-  mpRenders.forEach(function(render) {
-    const pre = render.querySelector('pre.mp-original-code');
-    if (pre) {
-      pre.style.display = '';
-      pre.classList.remove('mp-original-code');
-      render.replaceWith(pre);
-    } else {
-      render.remove();
-    }
-  });
-  
-  // 移除所有 iframe
-  const iframes = temp.querySelectorAll('iframe');
-  iframes.forEach(function(iframe) {
-    iframe.remove();
-  });
-  
-  // 移除折叠按钮
-  const buttons = temp.querySelectorAll('.TH-collapse-code-block-button');
-  buttons.forEach(function(btn) {
-    btn.remove();
-  });
-  
-  // 移除酒馆助手相关元素
-  const thElements = temp.querySelectorAll('[class*="TH-"], [class*="th-"]');
-  thElements.forEach(function(el) {
-    el.remove();
-  });
-  
-  // 清理 hidden! class
-  const hiddenElements = temp.querySelectorAll('.hidden\\!');
-  hiddenElements.forEach(function(el) {
-    el.classList.remove('hidden!');
-  });
-  
-  // 移除 blob URL 和本地 URL
-  const allElements = temp.querySelectorAll('*');
-  allElements.forEach(function(el) {
-    ['src', 'href', 'data'].forEach(function(attr) {
-      if (el.hasAttribute(attr)) {
-        const val = el.getAttribute(attr);
-        if (val && (val.startsWith('blob:') || val.includes('://localhost') || val.includes('://127.0.0.1') || val.includes('://192.168.'))) {
-          el.removeAttribute(attr);
+    
+    // 检查是否有前端代码块
+    const hasCodeBlock = mesText.querySelector('pre code') !== null;
+    let hasFrontendCode = false;
+    
+    if (hasCodeBlock) {
+      const codeBlocks = mesText.querySelectorAll('pre code');
+      codeBlocks.forEach(code => {
+        if (isFrontend(code.textContent)) {
+          hasFrontendCode = true;
         }
-      }
-    });
-    
-    // 移除 data-* 属性
-    Array.from(el.attributes).forEach(function(attr) {
-      if (attr.name.startsWith('data-')) {
-        el.removeAttribute(attr.name);
-      }
-    });
-    
-    // 清理 style 中的 URL
-    if (el.hasAttribute('style')) {
-      let style = el.getAttribute('style');
-      style = style.replace(/url\s*$\s*["']?blob:[^)]+["']?\s*$/gi, '');
-      style = style.replace(/url\s*$\s*["']?https?:\/\/(localhost|127\.0\.0\.1|192\.168\.[^)]+)["']?\s*$/gi, '');
-      if (style.trim()) {
-        el.setAttribute('style', style);
-      } else {
-        el.removeAttribute('style');
-      }
+      });
     }
-  });
+    
+    // 如果有前端代码，等待酒馆助手处理
+    if (hasFrontendCode) {
+      const tavernHelperProcessed = hasTavernHelperTraces(mesText);
+      
+      // 如果酒馆助手还没处理完且没超时，继续等待
+      if (!tavernHelperProcessed && waitCount < 30) {
+        setTimeout(checkAndCapture, checkInterval);
+        return;
+      }
+      
+      log('酒馆助手已处理: ' + tavernHelperProcessed + '，等待了 ' + (waitCount * checkInterval) + 'ms');
+    }
+    
+    // 现在可以捕获了
+    log('开始捕获 #' + messageId + '，等待了 ' + (waitCount * checkInterval) + 'ms');
+    
+    // 获取 HTML 并清理
+    let html = mesText.innerHTML;
+    
+    // 执行清理（移除酒馆助手和我们的所有痕迹）
+    html = cleanHtmlForSync(html);
+    
+    log('清理后HTML长度: ' + html.length);
+    
+    if (html && html.length > 50) {
+      sendWS({
+        type: 'syncAiComplete',
+        formattedHtml: html,
+        charName: lastMsg.name,
+        senderName: userName,
+        timestamp: Date.now()
+      });
+      
+      sendWS({ type: 'aiGenerationEnded' });
+      log('✅ 已发送纯净HTML，长度: ' + html.length);
+    } else {
+      log('⚠️ HTML内容太短，不发送');
+    }
+    
+    finishCapture();
+  }
   
-  // 移除 base、object、embed 标签
-  temp.querySelectorAll('base, object, embed').forEach(function(el) {
-    el.remove();
-  });
+  function finishCapture() {
+    isGenerating = false;
+  }
   
-  return temp.innerHTML;
+  // 开始检查（先等100ms让渲染完成）
+  setTimeout(checkAndCapture, 100);
 }
 
 // ========================================
-// 远程消息处理（核心）
+// 远程消息处理
 // ========================================
 
 function handleRemoteUserMessage(msg) {
@@ -1293,7 +1096,7 @@ function handleRemoteAiComplete(msg) {
   }
   
   // 2. 在插件内部沙箱渲染
-  const renderedHtml = InternalRenderer.render(msg.formattedHtml);
+  const renderedHtml = InternalRenderer.render(msg.formattedHtml, messageId);
   
   // 3. 存储到 chat 数组
   chat[messageId].extra = chat[messageId].extra || {};
@@ -1355,7 +1158,7 @@ function restoreRemoteMessages() {
     }
     
     // 2. 在内部重新渲染
-    const renderedHtml = InternalRenderer.render(msg.extra.remoteFormattedHtml);
+    const renderedHtml = InternalRenderer.render(msg.extra.remoteFormattedHtml, messageId);
     
     // 3. 更新存储
     msg.extra.remoteFormattedHtml = renderedHtml;
@@ -1381,14 +1184,179 @@ function restoreRemoteMessages() {
 }
 
 // ========================================
+// 上下文同步
+// ========================================
+
+function setupPrepareMessagesHijack() {
+  if (window._prepareOpenAIMessagesHijacked) {
+    return;
+  }
+  
+  const originalPrepare = window.prepareOpenAIMessages;
+  
+  if (!originalPrepare) {
+    log('⚠️ 无法获取 prepareOpenAIMessages');
+    return;
+  }
+  
+  window.prepareOpenAIMessages = async function(params, dryRun) {
+    if (!dryRun && currentRoom && turnState.isMyTurn && isGenerating) {
+      try {
+        collectAndSendSyncData(params);
+      } catch (e) {
+        log('收集同步数据出错: ' + e);
+      }
+    }
+    
+    if (!dryRun && currentRoom && remoteContextCache.size > 0) {
+      try {
+        injectRemoteContext(params);
+      } catch (e) {
+        log('注入远程内容出错: ' + e);
+      }
+    }
+    
+    return await originalPrepare.call(this, params, dryRun);
+  };
+  
+  window._prepareOpenAIMessagesHijacked = true;
+  log('✅ 已劫持 prepareOpenAIMessages');
+}
+
+function collectAndSendSyncData(params) {
+  const chat = getChat();
+  
+  const localChatHistory = chat
+    .filter(msg => !msg.extra?.isRemote && !msg.is_system)
+    .map(msg => ({
+      role: msg.is_user ? 'user' : 'assistant',
+      content: msg.mes,
+      name: msg.name,
+    }));
+  
+  sendWS({
+    type: 'syncContext',
+    worldInfo: {
+      before: params.worldInfoBefore || '',
+      after: params.worldInfoAfter || '',
+    },
+    character: {
+      description: params.charDescription || '',
+      personality: params.charPersonality || '',
+      scenario: params.scenario || '',
+    },
+    chatHistory: localChatHistory,
+    senderName: userName,
+    timestamp: Date.now(),
+  });
+  
+  const lastUserMsg = localChatHistory.filter(m => m.role === 'user').pop();
+  if (lastUserMsg) {
+    sendWS({
+      type: 'syncUserMessage',
+      content: lastUserMsg.content,
+      userName: lastUserMsg.name,
+      senderName: userName,
+      timestamp: Date.now(),
+    });
+  }
+  
+  sendWS({ type: 'userMessageSent' });
+}
+
+function injectRemoteContext(params) {
+  if (remoteContextCache.size === 0) return;
+  
+  let remoteWorldInfo = '';
+  let remoteCharacter = '';
+  let remoteChatHistory = [];
+  
+  remoteContextCache.forEach((data, odId) => {
+    const playerTag = `[来自 ${data.userName}]`;
+    
+    if (data.worldInfo) {
+      const wiBefore = data.worldInfo.before || '';
+      const wiAfter = data.worldInfo.after || '';
+      if (wiBefore || wiAfter) {
+        remoteWorldInfo += `\n${playerTag}\n${wiBefore}${wiAfter ? '\n' + wiAfter : ''}`;
+      }
+    }
+    
+    if (data.character) {
+      const charContent = [
+        data.character.description,
+        data.character.personality,
+        data.character.scenario,
+      ].filter(x => x).join('\n');
+      
+      if (charContent) {
+        remoteCharacter += `\n${playerTag}\n${charContent}`;
+      }
+    }
+    
+    if (data.chatHistory && data.chatHistory.length > 0) {
+      remoteChatHistory.push(...data.chatHistory);
+    }
+  });
+  
+  if (remoteWorldInfo) {
+    params.worldInfoAfter = (params.worldInfoAfter || '') + 
+      '\n\n【其他玩家的世界设定】' + remoteWorldInfo;
+  }
+  
+  if (remoteCharacter) {
+    params.scenario = (params.scenario || '') + 
+      '\n\n【其他玩家的角色信息】' + remoteCharacter;
+  }
+  
+  if (remoteChatHistory.length > 0) {
+    params.messages.push(...remoteChatHistory);
+  }
+}
+
+function handleRemoteSyncContext(msg) {
+  const { senderId, senderName, worldInfo, character, chatHistory, timestamp } = msg;
+  
+  remoteContextCache.set(senderId, {
+    userName: senderName,
+    worldInfo: worldInfo,
+    character: character,
+    chatHistory: chatHistory,
+    timestamp: timestamp,
+  });
+  
+  log('收到远程上下文，来自: ' + senderName);
+}
+
+// ========================================
 // 事件监听设置
 // ========================================
+
+function setupDOMObserver() {
+  const chatElement = document.getElementById('chat');
+  if (!chatElement) {
+    setTimeout(setupDOMObserver, 1000);
+    return;
+  }
+  
+  if (chatObserver) {
+    chatObserver.disconnect();
+  }
+  
+  chatObserver = new MutationObserver(function(mutations) {
+    // 目前仅用于监控，不做额外处理
+  });
+  
+  chatObserver.observe(chatElement, { 
+    childList: true, 
+    subtree: true,
+    characterData: true
+  });
+}
 
 function setupEventListeners() {
   const ctx = getContext();
   
-  hijackUpdateMessageBlock();
-  setupEventInterceptor();
   setupDOMObserver();
   setupPrepareMessagesHijack();
   setupFunctionLocks();
@@ -1400,13 +1368,6 @@ function setupEventListeners() {
     
     log('事件: 生成开始');
     isGenerating = true;
-    
-    pendingCapture = {
-      enabled: turnState.isMyTurn,
-      messageId: null,
-      captured: false,
-      html: null
-    };
   });
   
   // 流式同步
@@ -1416,10 +1377,6 @@ function setupEventListeners() {
     const chat = getChat();
     const lastMsg = chat[chat.length - 1];
     if (!lastMsg || lastMsg.is_user) return;
-    
-    if (pendingCapture.enabled && pendingCapture.messageId === null) {
-      pendingCapture.messageId = chat.length - 1;
-    }
     
     sendWS({
       type: 'syncAiStream',
@@ -1435,7 +1392,7 @@ function setupEventListeners() {
     throttledStreamSync(text);
   });
   
-  // 生成结束
+  // 生成结束 - 等待酒馆助手处理完再捕获
   eventSource.on(event_types.GENERATION_ENDED, function(messageCount) {
     if (!currentRoom) return;
     if (!turnState.isMyTurn || !isGenerating) return;
@@ -1448,77 +1405,22 @@ function setupEventListeners() {
     
     if (!lastMsg || lastMsg.is_user || lastMsg.extra?.isRemote) {
       isGenerating = false;
-      pendingCapture.enabled = false;
       return;
     }
     
-    pendingCapture.messageId = messageId;
-    
-    let waitCount = 0;
-    const maxWait = 20;
-    
-    const checkAndSend = () => {
-      waitCount++;
-      
-      if (pendingCapture.captured && pendingCapture.html) {
-        let html = cleanHtmlForSync(pendingCapture.html);
-        
-        sendWS({
-          type: 'syncAiComplete',
-          formattedHtml: html,
-          charName: lastMsg.name,
-          senderName: userName,
-          timestamp: Date.now()
-        });
-        
-        sendWS({ type: 'aiGenerationEnded' });
-        log('✅ 已发送HTML，长度: ' + html.length);
-        
-        isGenerating = false;
-        pendingCapture = { enabled: false, messageId: null, captured: false, html: null };
-        
-      } else if (waitCount >= maxWait) {
-        log('⚠️ 捕获超时，直接读取DOM');
-        
-        const mesText = document.querySelector(`.mes[mesid="${messageId}"] .mes_text`);
-        if (mesText) {
-          let html = cleanHtmlForSync(mesText.innerHTML);
-          
-          if (html && html.length > 50) {
-            sendWS({
-              type: 'syncAiComplete',
-              formattedHtml: html,
-              charName: lastMsg.name,
-              senderName: userName,
-              timestamp: Date.now()
-            });
-            sendWS({ type: 'aiGenerationEnded' });
-            log('✅ 超时后发送HTML，长度: ' + html.length);
-          }
-        }
-        
-        isGenerating = false;
-        pendingCapture = { enabled: false, messageId: null, captured: false, html: null };
-        
-      } else {
-        setTimeout(checkAndSend, 50);
-      }
-    };
-    
-    setTimeout(checkAndSend, 50);
+    // 等待酒馆助手处理完成后再捕获
+    waitForTavernHelperThenCapture(messageId, lastMsg);
   });
   
   eventSource.on(event_types.GENERATION_STOPPED, function() {
     log('事件: 生成停止');
     isGenerating = false;
-    pendingCapture = { enabled: false, messageId: null, captured: false, html: null };
   });
   
   eventSource.on(event_types.CHAT_CHANGED, function() {
     log('事件: 聊天切换');
-    remoteStreamMap.clear();
+remoteStreamMap.clear();
     isGenerating = false;
-    pendingCapture = { enabled: false, messageId: null, captured: false, html: null };
     
     RemoteMessageGuard.clear();
     
@@ -1798,7 +1700,7 @@ function handleMessage(msg) {
       handleRemoteAiComplete(msg);
       break;
     
-        case 'inactiveKick':
+    case 'inactiveKick':
       isInactiveKick = true;
       isNormalDisconnect = false;
       toast('warning', msg.message || '长时间不活跃，已断开');
@@ -2267,7 +2169,6 @@ function bindPanelEvents() {
     remoteStreamMap.clear();
     remoteContextCache.clear();
     isGenerating = false;
-    pendingCapture = { enabled: false, messageId: null, captured: false, html: null };
     turnState = {
       currentSpeaker: null,
       speakerName: null,
@@ -2510,6 +2411,7 @@ jQuery(async () => {
         connectServer();
       }, 1000);
     }
+    
     log('扩展加载完成');
   });
 });
@@ -2522,6 +2424,7 @@ window.mpDebug = {
   // 基础状态
   state: function() {
     console.log('===== 联机状态 =====');
+    console.log('版本:', CURRENT_VERSION);
     console.log('连接状态:', isConnected);
     console.log('用户ID:', odId);
     console.log('用户名:', userName);
@@ -2531,7 +2434,6 @@ window.mpDebug = {
     console.log('远程上下文缓存:', remoteContextCache.size);
     console.log('保护器数量:', RemoteMessageGuard.protected.size);
     console.log('正在生成:', isGenerating);
-    console.log('待捕获状态:', pendingCapture);
     console.log('====================');
   },
   
@@ -2543,36 +2445,50 @@ window.mpDebug = {
   // 恢复远程消息
   restoreRemote: restoreRemoteMessages,
   
-  // 测试捕获
-  testCapture: function() {
+  // 测试清理函数
+  testClean: function(messageId) {
     const chat = getChat();
-    if (chat.length === 0) {
-      console.log('聊天为空');
+    const id = messageId !== undefined ? messageId : chat.length - 1;
+    
+    const mesText = document.querySelector(`.mes[mesid="${id}"] .mes_text`);
+    if (!mesText) {
+      console.log('找不到消息 #' + id);
       return;
     }
-    const lastId = chat.length - 1;
-    const mesText = document.querySelector(`.mes[mesid="${lastId}"] .mes_text`);
-    if (mesText) {
-      console.log('最后一条消息DOM内容:');
-      console.log('  长度:', mesText.innerHTML.length);
-      console.log('  前200字符:', mesText.innerHTML.substring(0, 200));
-      console.log('  包含mp-frontend-render:', mesText.innerHTML.includes('mp-frontend-render'));
-      console.log('  包含iframe:', mesText.innerHTML.includes('<iframe'));
-      console.log('  包含pre:', mesText.innerHTML.includes('<pre'));
-    }
+    
+    console.log('===== 清理测试 #' + id + ' =====');
+        console.log('原始HTML长度:', mesText.innerHTML.length);
+    console.log('有酒馆助手痕迹:', hasTavernHelperTraces(mesText));
+    console.log('有我们的渲染痕迹:', hasOurRenderTraces(mesText));
+    
+    const cleaned = cleanHtmlForSync(mesText.innerHTML);
+    
+    console.log('清理后HTML长度:', cleaned.length);
+    console.log('清理后前300字符:', cleaned.substring(0, 300));
+    console.log('===========================');
+    
+    return cleaned;
   },
   
-  // 测试待捕获状态
-  testPendingCapture: function() {
-    console.log('===== 待捕获状态 =====');
-    console.log('enabled:', pendingCapture.enabled);
-    console.log('messageId:', pendingCapture.messageId);
-    console.log('captured:', pendingCapture.captured);
-    console.log('html长度:', pendingCapture.html?.length || 0);
-    if (pendingCapture.html) {
-      console.log('html前200字符:', pendingCapture.html.substring(0, 200));
-    }
-    console.log('======================');
+  // 测试内部渲染器
+  testRenderer: function(html, messageId) {
+    const testHtml = html || '<pre><code class="language-html">&lt;!DOCTYPE html&gt;\n&lt;html&gt;\n&lt;head&gt;&lt;/head&gt;\n&lt;body&gt;&lt;h1&gt;Test&lt;/h1&gt;&lt;/body&gt;\n&lt;/html&gt;</code></pre>';
+    const id = messageId || 0;
+    
+    console.log('===== 测试内部渲染器 =====');
+    console.log('输入长度:', testHtml.length);
+    console.log('输入前100字符:', testHtml.substring(0, 100));
+    
+    const rendered = InternalRenderer.render(testHtml, id);
+    
+    console.log('输出长度:', rendered.length);
+    console.log('输出前300字符:', rendered.substring(0, 300));
+    console.log('包含mp-render:', rendered.includes('mp-render'));
+    console.log('包含mp-iframe:', rendered.includes('mp-iframe'));
+    console.log('包含srcdoc:', rendered.includes('srcdoc'));
+    console.log('==========================');
+    
+    return rendered;
   },
   
   // 测试保护器
@@ -2581,61 +2497,11 @@ window.mpDebug = {
     const id = messageId !== undefined ? messageId : chat.length - 1;
     
     console.log('===== 保护器状态 #' + id + ' =====');
-    console.log('chat[].extra.remoteFormattedHtml 长度:', chat[id]?.extra?.remoteFormattedHtml?.length || 0);
     console.log('chat[].extra.isRemote:', chat[id]?.extra?.isRemote);
+    console.log('chat[].extra.remoteFormattedHtml 长度:', chat[id]?.extra?.remoteFormattedHtml?.length || 0);
     console.log('保护器是否存在:', RemoteMessageGuard.isProtected(id));
     console.log('data-remote属性:', $(`.mes[mesid="${id}"]`).attr('data-remote'));
-    
-    if (chat[id]?.extra?.remoteFormattedHtml) {
-      console.log('远程HTML前200字符:', chat[id].extra.remoteFormattedHtml.substring(0, 200));
-    }
     console.log('==============================');
-  },
-  
-  // 显示远程上下文缓存
-  showRemoteCache: function() {
-    console.log('===== 远程上下文缓存 =====');
-    console.log('缓存数量:', remoteContextCache.size);
-    remoteContextCache.forEach((data, odId) => {
-      console.log('\n玩家ID:', odId);
-      console.log('  用户名:', data.userName);
-      console.log('  世界书Before:', (data.worldInfo?.before?.substring(0, 100) || '空') + '...');
-      console.log('  世界书After:', (data.worldInfo?.after?.substring(0, 100) || '空') + '...');
-      console.log('  角色描述:', (data.character?.description?.substring(0, 100) || '空') + '...');
-      console.log('  聊天历史条数:', data.chatHistory?.length || 0);
-    });
-    console.log('==========================');
-  },
-  
-  // 清除远程上下文缓存
-  clearRemoteCache: function() {
-    remoteContextCache.clear();
-    console.log('已清除远程上下文缓存');
-  },
-  
-  // 强制捕获
-  forceCapture: function() {
-    const chat = getChat();
-    if (chat.length === 0) {
-      console.log('聊天为空');
-      return null;
-    }
-    const lastId = chat.length - 1;
-    const mesText = document.querySelector(`.mes[mesid="${lastId}"] .mes_text`);
-    if (mesText) {
-      const html = mesText.innerHTML;
-      console.log('强制捕获:');
-      console.log('  消息ID:', lastId);
-      console.log('  HTML长度:', html.length);
-      console.log('  前200字符:', html.substring(0, 200));
-      
-      const cleanedHtml = cleanHtmlForSync(html);
-      console.log('  清理后长度:', cleanedHtml.length);
-      console.log('  清理后前200字符:', cleanedHtml.substring(0, 200));
-      
-      return cleanedHtml;
-    }
-    return null;
   },
   
   // 模拟接收远程消息（测试用）
@@ -2643,7 +2509,7 @@ window.mpDebug = {
     const chat = getChat();
     const ctx = getContext();
     
-    const testHtml = html || '<p>这是一条<strong>测试</strong>远程消息</p><pre><code class="language-html">&lt;!DOCTYPE html&gt;\n&lt;html&gt;\n&lt;head&gt;&lt;title&gt;Test&lt;/title&gt;&lt;/head&gt;\n&lt;body&gt;&lt;h1&gt;Hello&lt;/h1&gt;&lt;/body&gt;\n&lt;/html&gt;</code></pre>';
+    const testHtml = html || '<p>这是一条<strong>测试</strong>远程消息</p><pre><code class="language-html">&lt;!DOCTYPE html&gt;\n&lt;html&gt;\n&lt;head&gt;&lt;title&gt;Test&lt;/title&gt;&lt;/head&gt;\n&lt;body&gt;&lt;h1&gt;Hello World&lt;/h1&gt;&lt;/body&gt;\n&lt;/html&gt;</code></pre>';
     
     const message = {
       name: '测试AI',
@@ -2662,7 +2528,7 @@ window.mpDebug = {
     $(`.mes[mesid="${messageId}"]`).attr('data-remote', 'true');
     
     // 内部渲染
-    const renderedHtml = InternalRenderer.render(testHtml);
+    const renderedHtml = InternalRenderer.render(testHtml, messageId);
     
     // 存储
     chat[messageId].extra.remoteFormattedHtml = renderedHtml;
@@ -2685,7 +2551,7 @@ window.mpDebug = {
     
     console.log('已创建测试远程消息 #' + messageId);
     console.log('渲染后HTML长度:', renderedHtml.length);
-    console.log('包含iframe:', renderedHtml.includes('<iframe'));
+    console.log('包含mp-iframe:', renderedHtml.includes('mp-iframe'));
     
     return messageId;
   },
@@ -2732,24 +2598,54 @@ window.mpDebug = {
     console.log('已清除所有保护器');
   },
   
-  // 测试内部渲染器
-  testRenderer: function(html) {
-    const testHtml = html || '<pre><code class="language-html">&lt;!DOCTYPE html&gt;\n&lt;html&gt;\n&lt;head&gt;&lt;/head&gt;\n&lt;body&gt;&lt;h1&gt;Test&lt;/h1&gt;&lt;/body&gt;\n&lt;/html&gt;</code></pre>';
-    
-    console.log('===== 测试内部渲染器 =====');
-    console.log('输入长度:', testHtml.length);
-    console.log('输入前100字符:', testHtml.substring(0, 100));
-    
-    const rendered = InternalRenderer.render(testHtml);
-    
-    console.log('输出长度:', rendered.length);
-    console.log('输出前200字符:', rendered.substring(0, 200));
-    console.log('包含mp-frontend-render:', rendered.includes('mp-frontend-render'));
-    console.log('包含iframe:', rendered.includes('<iframe'));
-    console.log('包含srcdoc:', rendered.includes('srcdoc'));
+  // 显示远程上下文缓存
+  showRemoteCache: function() {
+    console.log('===== 远程上下文缓存 =====');
+    console.log('缓存数量:', remoteContextCache.size);
+    remoteContextCache.forEach((data, odId) => {
+      console.log('\n玩家ID:', odId);
+      console.log('  用户名:', data.userName);
+      console.log('  世界书Before:', (data.worldInfo?.before?.substring(0, 100) || '空') + '...');
+      console.log('  世界书After:', (data.worldInfo?.after?.substring(0, 100) || '空') + '...');
+      console.log('  角色描述:', (data.character?.description?.substring(0, 100) || '空') + '...');
+      console.log('  聊天历史条数:', data.chatHistory?.length || 0);
+    });
     console.log('==========================');
+  },
+  
+  // 清除远程上下文缓存
+  clearRemoteCache: function() {
+    remoteContextCache.clear();
+    console.log('已清除远程上下文缓存');
+  },
+  
+  // 强制捕获当前消息
+  forceCapture: function() {
+    const chat = getChat();
+    if (chat.length === 0) {
+      console.log('聊天为空');
+      return null;
+    }
     
-    return rendered;
+    const lastId = chat.length - 1;
+    const mesText = document.querySelector(`.mes[mesid="${lastId}"] .mes_text`);
+    
+    if (!mesText) {
+      console.log('找不到消息元素');
+      return null;
+    }
+    
+    console.log('===== 强制捕获 #' + lastId + ' =====');
+    console.log('原始HTML长度:', mesText.innerHTML.length);
+    console.log('有酒馆助手痕迹:', hasTavernHelperTraces(mesText));
+    
+    const cleaned = cleanHtmlForSync(mesText.innerHTML);
+    
+    console.log('清理后长度:', cleaned.length);
+    console.log('清理后前200字符:', cleaned.substring(0, 200));
+    console.log('================================');
+    
+    return cleaned;
   },
   
   // 获取引用
@@ -2757,7 +2653,6 @@ window.mpDebug = {
   get contextCache() { return remoteContextCache; },
   get guard() { return RemoteMessageGuard; },
   get renderer() { return InternalRenderer; },
-  get pending() { return pendingCapture; },
   get turn() { return turnState; }
 };
 
@@ -2771,11 +2666,12 @@ log('  mpDebug.disconnect() - 断开连接');
 log('  mpDebug.openPanel() - 打开面板');
 log('========================================');
 log('测试命令:');
-log('  mpDebug.testCapture() - 测试最后一条消息');
-log('  mpDebug.testProtector(id) - 测试保护器状态');
+log('  mpDebug.testClean(id) - 测试清理函数');
 log('  mpDebug.testRenderer(html) - 测试内部渲染器');
+log('  mpDebug.testProtector(id) - 测试保护器状态');
 log('  mpDebug.simulateRemote(html) - 模拟接收远程消息');
 log('  mpDebug.triggerCorruption(id) - 触发污染测试');
+log('  mpDebug.forceCapture() - 强制捕获当前消息');
 log('========================================');
 log('保护器命令:');
 log('  mpDebug.listProtected() - 列出受保护的消息');
