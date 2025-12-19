@@ -28,7 +28,7 @@
   border-radius: 20px;
   width: 380px;
   max-width: 95vw;
-  max-height: 65vh;
+  max-height: 60vh;
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -529,7 +529,7 @@
     width: 100%;
     max-width: 100%;
     border-radius: 0;
-    max-height: 75vh;
+    max-height: 65vh;
   }
   
   .mp-content {
