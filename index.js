@@ -1442,22 +1442,21 @@ function setupEventListeners() {
   });
   
   // ========== 第9.5步：提取 + 注入 ==========
-  eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, function(eventData) {
-    if (eventData.dryRun) return;
-    if (!currentRoom) return;
-    
-    log('事件: CHAT_COMPLETION_PROMPT_READY');
-    
-    // 1. 如果是我的回合且正在生成，提取并发送背景
-    if (turnState.isMyTurn && isGenerating) {
-      extractAndSendBackground();
-    }
-    
-    // 2. 如果有远程背景缓存，注入到 messages
-    if (remoteContextCache.size > 0) {
-      injectRemoteBackground(eventData);
-    }
-  });
+eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, function(eventData) {
+  if (!currentRoom) return;
+  
+  log('事件: CHAT_COMPLETION_PROMPT_READY, dryRun=' + eventData.dryRun);
+  
+  // 1. 如果是我的回合且正在生成，提取并发送背景（仅在非 dryRun 时）
+  if (!eventData.dryRun && turnState.isMyTurn && isGenerating) {
+    extractAndSendBackground();
+  }
+  
+  // 2. 如果有远程背景缓存，注入到 messages（dryRun 时也要注入，这样提示词查看器能看到）
+  if (remoteContextCache.size > 0) {
+    injectRemoteBackground(eventData);
+  }
+});
   
   // ========== 流式同步 ==========
   const throttledStreamSync = throttle(function(text) {
@@ -3364,6 +3363,7 @@ log('  mpDebug.clearRemoteCache() - 清除远程上下文');
 log('  mpDebug.showSentData() - 显示已发送的数据');
 
 log('========================================');
+
 
 
 
