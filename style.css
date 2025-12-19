@@ -28,7 +28,7 @@
   border-radius: 20px;
   width: 380px;
   max-width: 95vw;
-  max-height: 85vh;
+  max-height: 70vh;
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -86,9 +86,12 @@
 }
 
 /* 内容区 */
+
 .mp-content {
   padding: 20px;
+  padding-bottom: 30px;
   overflow-y: auto;
+  overflow-x: hidden;
   flex: 1;
 }
 
