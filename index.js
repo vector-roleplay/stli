@@ -1228,62 +1228,7 @@ function injectRemoteBackground(eventData) {
   // 2. 如果没有远程背景缓存，返回
   if (remoteContextCache.size === 0) return;
   
-  // 3. 构建远程背景内容
-  let remoteContent = '';
-  
-  remoteContextCache.forEach((data, odId) => {
-    const bg = data.background;
-    const playerName = data.senderName || '未知玩家';
-    const charName = bg.charName || '角色';
-    
-    remoteContent += '\n\n=== 玩家: ' + playerName + ' | 角色: ' + charName + ' ===\n';
-    
-    // 世界书
-    if (bg.worldInfoBefore) {
-      remoteContent += '\n【世界书-前置】\n' + bg.worldInfoBefore + '\n';
-    }
-    if (bg.worldInfoAfter) {
-      remoteContent += '\n【世界书-后置】\n' + bg.worldInfoAfter + '\n';
-    }
-    
-    // 角色卡
-    if (bg.description) {
-      remoteContent += '\n【角色描述】\n' + bg.description + '\n';
-    }
-    if (bg.personality) {
-      remoteContent += '\n【角色性格】\n' + bg.personality + '\n';
-    }
-    if (bg.scenario) {
-      remoteContent += '\n【场景】\n' + bg.scenario + '\n';
-    }
-    
-    // 用户人设
-    if (bg.persona) {
-      remoteContent += '\n【' + playerName + '的人设】\n' + bg.persona + '\n';
-    }
-    
-    // 聊天历史
-    if (bg.chatHistory && bg.chatHistory.length > 0) {
-      remoteContent += '\n【聊天历史】\n';
-      bg.chatHistory.forEach(msg => {
-        const roleTag = msg.role === 'user' ? '[用户]' : '[角色]';
-        const name = msg.name || (msg.role === 'user' ? playerName : charName);
-        remoteContent += roleTag + ' ' + name + ': ' + msg.content + '\n';
-      });
-    }
-    
-    remoteContent += '\n=== 背景结束 ===';
-  });
-  
-  if (!remoteContent.trim()) return;
-  
-  // 4. 构建注入消息
-  const injectionMessage = {
-    role: 'system',
-    content: '【其他玩家的背景设定】' + remoteContent
-  };
-  
-  // 5. 找到合适位置（在聊天历史之前）
+  // 3. 找到合适位置（在聊天历史之前）
   let insertIndex = 3;
   
   for (let i = 0; i < Math.min(eventData.chat.length, 15); i++) {
@@ -1294,10 +1239,82 @@ function injectRemoteBackground(eventData) {
     }
   }
   
-  // 6. 插入
-  eventData.chat.splice(insertIndex, 0, injectionMessage);
+  // 4. 为每个玩家构建独立的 system 消息
+  const injectionMessages = [];
   
-  log('已注入远程背景，位置: ' + insertIndex + '，长度: ' + remoteContent.length);
+  remoteContextCache.forEach((data, odId) => {
+    const bg = data.background;
+    const playerName = data.senderName || '未知玩家';
+    const charName = bg.charName || '角色';
+    
+    // 构建内容
+    let content = '';
+    
+    // 醒目的开头标记
+    content += '╔══════════════════════════════════════════╗\n';
+    content += '║  🌐 远程玩家: ' + playerName + ' | 角色: ' + charName + '\n';
+    content += '╚══════════════════════════════════════════╝\n\n';
+    
+    // 世界书
+    if (bg.worldInfoBefore) {
+      content += '【世界书-前置】\n' + bg.worldInfoBefore + '\n\n';
+    }
+    if (bg.worldInfoAfter) {
+      content += '【世界书-后置】\n' + bg.worldInfoAfter + '\n\n';
+    }
+    
+    // 角色卡
+    if (bg.description) {
+      content += '【角色描述】\n' + bg.description + '\n\n';
+    }
+    if (bg.personality) {
+      content += '【角色性格】\n' + bg.personality + '\n\n';
+    }
+    if (bg.scenario) {
+      content += '【场景】\n' + bg.scenario + '\n\n';
+    }
+    
+    // 用户人设
+    if (bg.persona) {
+      content += '【' + playerName + ' 的人设】\n' + bg.persona + '\n\n';
+    }
+    
+    // 聊天历史
+    if (bg.chatHistory && bg.chatHistory.length > 0) {
+      content += '【聊天历史】\n';
+      bg.chatHistory.forEach(msg => {
+        const roleTag = msg.role === 'user' ? '[用户]' : '[角色]';
+        const msgName = msg.name || (msg.role === 'user' ? playerName : charName);
+        content += roleTag + ' ' + msgName + ': ' + msg.content + '\n';
+      });
+      content += '\n';
+    }
+    
+    // 结束标记
+    content += '══════════════ 背景结束 ══════════════';
+    
+    // 如果有实际内容才添加（不只是框架）
+    const hasContent = bg.worldInfoBefore || bg.worldInfoAfter || 
+                       bg.description || bg.personality || bg.scenario || 
+                       bg.persona || (bg.chatHistory && bg.chatHistory.length > 0);
+    
+    if (hasContent) {
+      // 清理 name 字段（只保留字母数字下划线）
+      const safeName = 'REMOTE_' + playerName.replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '_');
+      
+      injectionMessages.push({
+        role: 'system',
+        name: safeName,
+        content: content
+      });
+    }
+  });
+  
+  // 5. 插入所有消息
+  if (injectionMessages.length > 0) {
+    eventData.chat.splice(insertIndex, 0, ...injectionMessages);
+    log('已注入 ' + injectionMessages.length + ' 条远程玩家背景，位置: ' + insertIndex);
+  }
 }
 
 // ========================================
@@ -3347,6 +3364,7 @@ log('  mpDebug.clearRemoteCache() - 清除远程上下文');
 log('  mpDebug.showSentData() - 显示已发送的数据');
 
 log('========================================');
+
 
 
 
