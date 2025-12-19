@@ -1,5 +1,5 @@
 // ========================================
-// 酒馆联机扩展 v3.1.0
+// 酒馆联机扩展 v3.2.0
 // 服务器: wss://chu.zeabur.app
 // 核心改动:
 //   - 用户消息同步
@@ -16,7 +16,7 @@ const extensionName = 'stli';
 const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
 
 // ========== 版本信息 ==========
-const CURRENT_VERSION = '3.1.0';
+const CURRENT_VERSION = '3.2.0';
 
 const defaultSettings = {
   serverUrl: 'wss://chu.zeabur.app',
@@ -2314,7 +2314,7 @@ function openSyncViewPanel() {
     'width': '100%',
     'height': '100%',
     'background': 'rgba(0,0,0,0.8)',
-    'z-index': '99999',
+    'z-index': '99998',
     'display': 'flex',
     'align-items': 'center',
     'justify-content': 'center',
@@ -2536,12 +2536,19 @@ function openSyncViewPanel() {
   }
   
   $('#mp-sync-close').on('click', closeSyncViewPanel);
+  
+  // 点击展开/收起
+  $(document).off('click.syncFieldToggle');
+  $(document).on('click.syncFieldToggle', '.mp-sync-field-header', function() {
+    const wrap = $(this).closest('.mp-sync-field-wrap');
+    wrap.toggleClass('expanded');
+  });
 }
 
 function closeSyncViewPanel() {
   $('#mp-sync-view-overlay').remove();
+  $(document).off('click.syncFieldToggle');
 }
-
 // ========================================
 // 主面板构建
 // ========================================
@@ -3309,4 +3316,5 @@ log('  mpDebug.clearRemoteCache() - 清除远程上下文');
 log('  mpDebug.showSentData() - 显示已发送的数据');
 
 log('========================================');
+
 
