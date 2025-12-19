@@ -940,12 +940,11 @@ function handleRemoteUserMessage(msg) {
   is_user: true,
   is_system: false,
   send_date: getMessageTimeStamp(),
-  mes: '[远程消息]',
+  mes: msg.content,
   extra: {
     isRemote: true,
     remoteSender: msg.senderName,
-    remoteSenderId: msg.senderId,
-    remoteContent: msg.content
+    remoteSenderId: msg.senderId
   }
 };
   
@@ -3361,6 +3360,7 @@ log('  mpDebug.clearRemoteCache() - 清除远程上下文');
 log('  mpDebug.showSentData() - 显示已发送的数据');
 
 log('========================================');
+
 
 
 
