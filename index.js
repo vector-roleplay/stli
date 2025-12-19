@@ -2667,11 +2667,10 @@ function openPanel() {
   'background': 'rgba(0,0,0,0.7)',
   'z-index': '2147483647',
   'display': 'flex',
-  'align-items': 'flex-start',
+  'align-items': 'center',
   'justify-content': 'center',
-  'padding': '40px 20px 60px 20px',
-  'box-sizing': 'border-box',
-  'overflow-y': 'auto'
+  'padding': '20px',
+  'box-sizing': 'border-box'
 });
   
   overlay.on('click', function(e) {
@@ -3332,6 +3331,7 @@ log('  mpDebug.clearRemoteCache() - 清除远程上下文');
 log('  mpDebug.showSentData() - 显示已发送的数据');
 
 log('========================================');
+
 
 
 
