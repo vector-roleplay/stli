@@ -10,6 +10,7 @@
 
 import { eventSource, event_types } from '../../../../script.js';
 import { extension_settings, getContext } from '../../../extensions.js';
+import { getRegexedString, regex_placement } from '../../regex/engine.js';
 
 // ========== 扩展配置 ==========
 const extensionName = 'stli';
@@ -1126,27 +1127,42 @@ function extractAndSendBackground() {
   }
   
   // 从 chat 数组提取本地聊天历史（排除远程消息占位符）
-  const chat = getChat();
-  const chatHistory = [];
+const chat = getChat();
+const chatHistory = [];
+const chatLength = chat.length;
+
+chat.forEach((msg, index) => {
+  // 跳过系统消息
+  if (msg.is_system) return;
   
-  chat.forEach((msg, index) => {
-    // 跳过系统消息
-    if (msg.is_system) return;
-    
-    // 跳过远程消息（占位符）
-    if (msg.extra?.isRemote) return;
-    
-    // 跳过占位符内容
-    if (msg.mes === '[远程消息]' || msg.mes === '[远端消息]') return;
-    
-    // 提取本地消息
-    chatHistory.push({
-      role: msg.is_user ? 'user' : 'assistant',
-      name: msg.name || (msg.is_user ? ctx.name1 : ctx.name2),
-      content: msg.mes,
-      index: index
-    });
+  // 跳过远程消息（占位符）
+  if (msg.extra?.isRemote) return;
+  
+  // 跳过占位符内容
+  if (msg.mes === '[远程消息]' || msg.mes === '[远端消息]') return;
+  
+  // 确定正则类型（用户输入 或 AI输出）
+  const regexType = msg.is_user 
+    ? regex_placement.USER_INPUT 
+    : regex_placement.AI_OUTPUT;
+  
+  // 计算消息深度（0 = 最新消息）
+  const depth = chatLength - index - 1;
+  
+  // 应用已启用的正则规则处理消息内容
+  const cleanedContent = getRegexedString(msg.mes, regexType, {
+    isPrompt: true,
+    depth: depth
   });
+  
+  // 提取本地消息
+  chatHistory.push({
+    role: msg.is_user ? 'user' : 'assistant',
+    name: msg.name || (msg.is_user ? ctx.name1 : ctx.name2),
+    content: cleanedContent,
+    index: index
+  });
+});
   
   const backgroundData = {
     worldInfoBefore: worldInfoBefore.trim(),
@@ -3331,6 +3347,7 @@ log('  mpDebug.clearRemoteCache() - 清除远程上下文');
 log('  mpDebug.showSentData() - 显示已发送的数据');
 
 log('========================================');
+
 
 
 
