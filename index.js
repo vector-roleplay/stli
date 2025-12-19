@@ -1067,6 +1067,9 @@ function handleRemoteAiComplete(msg) {
   chat[messageId].extra.remoteSenderName = msg.senderName;
   chat[messageId].extra.remoteCharName = msg.charName;
   
+  // 把 mes 改回占位符，防止酒馆读取实际内容
+chat[messageId].mes = '[远程消息]';
+  
   const mesText = document.querySelector(`.mes[mesid="${messageId}"] .mes_text`);
   if (mesText) {
     mesText.innerHTML = renderedHtml;
@@ -3357,6 +3360,7 @@ log('  mpDebug.clearRemoteCache() - 清除远程上下文');
 log('  mpDebug.showSentData() - 显示已发送的数据');
 
 log('========================================');
+
 
 
 
