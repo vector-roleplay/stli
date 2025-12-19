@@ -936,17 +936,18 @@ function handleRemoteUserMessage(msg) {
   if (!addOneMessage) return;
   
   const message = {
-    name: msg.userName,
-    is_user: true,
-    is_system: false,
-    send_date: getMessageTimeStamp(),
-    mes: msg.content,
-    extra: {
-      isRemote: true,
-      remoteSender: msg.senderName,
-      remoteSenderId: msg.senderId
-    }
-  };
+  name: msg.userName,
+  is_user: true,
+  is_system: false,
+  send_date: getMessageTimeStamp(),
+  mes: '[远程消息]',
+  extra: {
+    isRemote: true,
+    remoteSender: msg.senderName,
+    remoteSenderId: msg.senderId,
+    remoteContent: msg.content
+  }
+};
   
   chat.push(message);
   const messageId = chat.length - 1;
@@ -3360,6 +3361,7 @@ log('  mpDebug.clearRemoteCache() - 清除远程上下文');
 log('  mpDebug.showSentData() - 显示已发送的数据');
 
 log('========================================');
+
 
 
 
