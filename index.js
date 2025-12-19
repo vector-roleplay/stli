@@ -2659,19 +2659,20 @@ function openPanel() {
   
   const overlay = $('<div id="mp-main-overlay"></div>');
   overlay.css({
-    'position': 'fixed',
-    'top': '0',
-    'left': '0',
-    'width': '100%',
-    'height': '100%',
-    'background': 'rgba(0,0,0,0.7)',
-    'z-index': '99998',
-    'display': 'flex',
-    'align-items': 'center',
-    'justify-content': 'center',
-    'padding': '20px',
-    'box-sizing': 'border-box'
-  });
+  'position': 'fixed',
+  'top': '0',
+  'left': '0',
+  'width': '100%',
+  'height': '100%',
+  'background': 'rgba(0,0,0,0.7)',
+  'z-index': '99998',
+  'display': 'flex',
+  'align-items': 'flex-start',
+  'justify-content': 'center',
+  'padding': '40px 20px 60px 20px',
+  'box-sizing': 'border-box',
+  'overflow-y': 'auto'
+});
   
   overlay.on('click', function(e) {
     if (e.target === this) closePanel();
@@ -3331,6 +3332,7 @@ log('  mpDebug.clearRemoteCache() - 清除远程上下文');
 log('  mpDebug.showSentData() - 显示已发送的数据');
 
 log('========================================');
+
 
 
 
