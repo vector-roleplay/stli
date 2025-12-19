@@ -2665,7 +2665,7 @@ function openPanel() {
   'width': '100%',
   'height': '100%',
   'background': 'rgba(0,0,0,0.7)',
-  'z-index': '99998',
+  'z-index': '2147483647',
   'display': 'flex',
   'align-items': 'flex-start',
   'justify-content': 'center',
@@ -3332,6 +3332,7 @@ log('  mpDebug.clearRemoteCache() - 清除远程上下文');
 log('  mpDebug.showSentData() - 显示已发送的数据');
 
 log('========================================');
+
 
 
 
