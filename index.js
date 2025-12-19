@@ -2327,17 +2327,17 @@ function openSyncViewPanel() {
   });
   
   const panel = $('<div id="mp-sync-view-panel"></div>');
-  panel.css({
-    'background': '#1a1a2e',
-    'border-radius': '16px',
-    'width': '600px',
-    'max-width': '95%',
-    'max-height': '80vh',
-    'overflow': 'hidden',
-    'display': 'flex',
-    'flex-direction': 'column',
-    'margin': 'auto'
-  });
+panel.css({
+  'background': '#1a1a2e',
+  'border-radius': '16px',
+  'width': '600px',
+  'max-width': '95%',
+  'max-height': '70vh',
+  'overflow': 'hidden',
+  'display': 'flex',
+  'flex-direction': 'column',
+  'margin': 'auto'
+});
   
   const header = $('<div class="mp-sync-header"></div>');
   header.css({
@@ -2351,11 +2351,13 @@ function openSyncViewPanel() {
   header.html('<div style="color:#e94560;font-size:16px;font-weight:bold;">📊 同步内容查看</div><button id="mp-sync-close" style="background:none;border:none;color:#888;font-size:24px;cursor:pointer;">×</button>');
   
   const content = $('<div class="mp-sync-content"></div>');
-  content.css({
-    'padding': '20px',
-    'overflow-y': 'auto',
-    'flex': '1'
-  });
+content.css({
+  'padding': '20px',
+  'padding-bottom': '30px',
+  'overflow-y': 'auto',
+  'overflow-x': 'hidden',
+  'flex': '1'
+});
   content.html(buildSyncViewHTML());
   
   panel.append(header);
@@ -3329,6 +3331,7 @@ log('  mpDebug.clearRemoteCache() - 清除远程上下文');
 log('  mpDebug.showSentData() - 显示已发送的数据');
 
 log('========================================');
+
 
 
 
