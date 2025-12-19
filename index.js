@@ -1201,28 +1201,21 @@ chat.forEach((msg, index) => {
 // 注入远程背景到 messages
 // ========================================
 
+
 function injectRemoteBackground(eventData) {
-  // 1. 先移除占位符消息
-  const originalLength = eventData.chat.length;
-  
-  eventData.chat = eventData.chat.filter(msg => {
-    // 保留非聊天消息（system 提示词等）
-    if (msg.role !== 'user' && msg.role !== 'assistant') return true;
+  // 1. 先移除占位符消息（必须用 splice，不能用 filter）
+  for (let i = eventData.chat.length - 1; i >= 0; i--) {
+    const msg = eventData.chat[i];
     
-    // 移除占位符
+    // 只检查 user/assistant 消息
+    if (msg.role !== 'user' && msg.role !== 'assistant') continue;
+    
     const content = msg.content || '';
     if (content === '[远程消息]' || content === '[远端消息]' || 
         content.trim() === '[远程消息]' || content.trim() === '[远端消息]') {
-      log('移除占位符消息');
-      return false;
+      log('移除占位符消息，位置: ' + i);
+      eventData.chat.splice(i, 1);  // ← 原地删除
     }
-    
-    return true;
-  });
-  
-  const removedCount = originalLength - eventData.chat.length;
-  if (removedCount > 0) {
-    log('已移除 ' + removedCount + ' 条占位符消息');
   }
   
   // 2. 如果没有远程背景缓存，返回
@@ -1293,13 +1286,12 @@ function injectRemoteBackground(eventData) {
     // 结束标记
     content += '══════════════ 背景结束 ══════════════';
     
-    // 如果有实际内容才添加（不只是框架）
+    // 如果有实际内容才添加
     const hasContent = bg.worldInfoBefore || bg.worldInfoAfter || 
                        bg.description || bg.personality || bg.scenario || 
                        bg.persona || (bg.chatHistory && bg.chatHistory.length > 0);
     
     if (hasContent) {
-      // 清理 name 字段（只保留字母数字下划线）
       const safeName = 'REMOTE_' + playerName.replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '_');
       
       injectionMessages.push({
@@ -1307,16 +1299,18 @@ function injectRemoteBackground(eventData) {
         name: safeName,
         content: content
       });
+      
+      log('构建远程背景: ' + playerName + ', 内容长度: ' + content.length);
     }
   });
   
-  // 5. 插入所有消息
+  // 5. 插入所有消息（用 splice 原地插入）
   if (injectionMessages.length > 0) {
-    eventData.chat.splice(insertIndex, 0, ...injectionMessages);
+    eventData.chat.splice(insertIndex, 0, ...injectionMessages);  // ← 原地插入
     log('已注入 ' + injectionMessages.length + ' 条远程玩家背景，位置: ' + insertIndex);
+    log('注入后 chat 长度: ' + eventData.chat.length);
   }
 }
-
 // ========================================
 // 恢复远程消息（刷新后）
 // ========================================
@@ -3363,6 +3357,7 @@ log('  mpDebug.clearRemoteCache() - 清除远程上下文');
 log('  mpDebug.showSentData() - 显示已发送的数据');
 
 log('========================================');
+
 
 
 
