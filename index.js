@@ -1117,7 +1117,6 @@ function extractAndSendBackground() {
     lastActivatedWorldInfo.forEach(entry => {
       if (!entry || !entry.content) return;
       
-      // position: 0=before, 1=after, 4=atDepth
       if (entry.position === 0) {
         worldInfoBefore += entry.content + '\n';
       } else if (entry.position === 1) {
@@ -1125,6 +1124,29 @@ function extractAndSendBackground() {
       }
     });
   }
+  
+  // 从 chat 数组提取本地聊天历史（排除远程消息占位符）
+  const chat = getChat();
+  const chatHistory = [];
+  
+  chat.forEach((msg, index) => {
+    // 跳过系统消息
+    if (msg.is_system) return;
+    
+    // 跳过远程消息（占位符）
+    if (msg.extra?.isRemote) return;
+    
+    // 跳过占位符内容
+    if (msg.mes === '[远程消息]' || msg.mes === '[远端消息]') return;
+    
+    // 提取本地消息
+    chatHistory.push({
+      role: msg.is_user ? 'user' : 'assistant',
+      name: msg.name || (msg.is_user ? ctx.name1 : ctx.name2),
+      content: msg.mes,
+      index: index
+    });
+  });
   
   const backgroundData = {
     worldInfoBefore: worldInfoBefore.trim(),
@@ -1134,7 +1156,8 @@ function extractAndSendBackground() {
     scenario: cardFields.scenario || '',
     persona: cardFields.persona || '',
     charName: ctx.name2 || '',
-    userName: ctx.name1 || ''
+    userName: ctx.name1 || '',
+    chatHistory: chatHistory
   };
   
   // 记录发送的背景
@@ -1155,6 +1178,7 @@ function extractAndSendBackground() {
   log('  - 世界书Before长度: ' + worldInfoBefore.length);
   log('  - 世界书After长度: ' + worldInfoAfter.length);
   log('  - 角色描述长度: ' + (cardFields.description?.length || 0));
+  log('  - 聊天历史条数: ' + chatHistory.length);
 }
 
 // ========================================
@@ -1162,47 +1186,91 @@ function extractAndSendBackground() {
 // ========================================
 
 function injectRemoteBackground(eventData) {
+  // 1. 先移除占位符消息
+  const originalLength = eventData.chat.length;
+  
+  eventData.chat = eventData.chat.filter(msg => {
+    // 保留非聊天消息（system 提示词等）
+    if (msg.role !== 'user' && msg.role !== 'assistant') return true;
+    
+    // 移除占位符
+    const content = msg.content || '';
+    if (content === '[远程消息]' || content === '[远端消息]' || 
+        content.trim() === '[远程消息]' || content.trim() === '[远端消息]') {
+      log('移除占位符消息');
+      return false;
+    }
+    
+    return true;
+  });
+  
+  const removedCount = originalLength - eventData.chat.length;
+  if (removedCount > 0) {
+    log('已移除 ' + removedCount + ' 条占位符消息');
+  }
+  
+  // 2. 如果没有远程背景缓存，返回
+  if (remoteContextCache.size === 0) return;
+  
+  // 3. 构建远程背景内容
   let remoteContent = '';
   
   remoteContextCache.forEach((data, odId) => {
-    const playerTag = `\n\n【来自玩家: ${data.senderName}】\n`;
-    let playerContent = '';
+    const bg = data.background;
+    const playerName = data.senderName || '未知玩家';
+    const charName = bg.charName || '角色';
     
-    if (data.background.worldInfoBefore) {
-      playerContent += data.background.worldInfoBefore + '\n';
+    remoteContent += '\n\n=== 玩家: ' + playerName + ' | 角色: ' + charName + ' ===\n';
+    
+    // 世界书
+    if (bg.worldInfoBefore) {
+      remoteContent += '\n【世界书-前置】\n' + bg.worldInfoBefore + '\n';
     }
-    if (data.background.worldInfoAfter) {
-      playerContent += data.background.worldInfoAfter + '\n';
-    }
-    if (data.background.description) {
-      playerContent += data.background.description + '\n';
-    }
-    if (data.background.personality) {
-      playerContent += data.background.personality + '\n';
-    }
-    if (data.background.scenario) {
-      playerContent += data.background.scenario + '\n';
-    }
-    if (data.background.persona) {
-      playerContent += data.background.persona + '\n';
+    if (bg.worldInfoAfter) {
+      remoteContent += '\n【世界书-后置】\n' + bg.worldInfoAfter + '\n';
     }
     
-    if (playerContent.trim()) {
-      remoteContent += playerTag + playerContent;
+    // 角色卡
+    if (bg.description) {
+      remoteContent += '\n【角色描述】\n' + bg.description + '\n';
     }
+    if (bg.personality) {
+      remoteContent += '\n【角色性格】\n' + bg.personality + '\n';
+    }
+    if (bg.scenario) {
+      remoteContent += '\n【场景】\n' + bg.scenario + '\n';
+    }
+    
+    // 用户人设
+    if (bg.persona) {
+      remoteContent += '\n【' + playerName + '的人设】\n' + bg.persona + '\n';
+    }
+    
+    // 聊天历史
+    if (bg.chatHistory && bg.chatHistory.length > 0) {
+      remoteContent += '\n【聊天历史】\n';
+      bg.chatHistory.forEach(msg => {
+        const roleTag = msg.role === 'user' ? '[用户]' : '[角色]';
+        const name = msg.name || (msg.role === 'user' ? playerName : charName);
+        remoteContent += roleTag + ' ' + name + ': ' + msg.content + '\n';
+      });
+    }
+    
+    remoteContent += '\n=== 背景结束 ===';
   });
   
   if (!remoteContent.trim()) return;
   
+  // 4. 构建注入消息
   const injectionMessage = {
     role: 'system',
     content: '【其他玩家的背景设定】' + remoteContent
   };
   
-  // 找到合适位置（在聊天历史之前）
+  // 5. 找到合适位置（在聊天历史之前）
   let insertIndex = 3;
   
-  for (let i = 0; i < Math.min(eventData.chat.length, 10); i++) {
+  for (let i = 0; i < Math.min(eventData.chat.length, 15); i++) {
     const msg = eventData.chat[i];
     if (msg.role === 'user' || msg.role === 'assistant') {
       insertIndex = i;
@@ -1210,6 +1278,7 @@ function injectRemoteBackground(eventData) {
     }
   }
   
+  // 6. 插入
   eventData.chat.splice(insertIndex, 0, injectionMessage);
   
   log('已注入远程背景，位置: ' + insertIndex + '，长度: ' + remoteContent.length);
@@ -1990,90 +2059,239 @@ function updateMenuText() {
 function buildSyncViewHTML() {
   let html = '<div class="mp-sync-view">';
   
+  // ========== 我发送的背景数据 ==========
   html += '<div class="mp-sync-section">';
-  html += '<div class="mp-sync-section-title">📤 我发送的内容</div>';
+  html += '<div class="mp-sync-section-title">📤 我发送的背景数据</div>';
   
-  // 最后发送的用户消息
-  html += '<div class="mp-sync-item">';
-  html += '<div class="mp-sync-item-label">最后发送的用户消息:</div>';
-  if (lastSentUserMessage) {
-    html += '<div class="mp-sync-item-content">';
-    html += '<div class="mp-sync-meta">用户: ' + escapeHtml(lastSentUserMessage.userName) + ' | 时间: ' + new Date(lastSentUserMessage.timestamp).toLocaleTimeString() + '</div>';
-    html += '<div class="mp-sync-text">' + escapeHtml(lastSentUserMessage.content?.substring(0, 200) || '') + (lastSentUserMessage.content?.length > 200 ? '...' : '') + '</div>';
-    html += '</div>';
-  } else {
-    html += '<div class="mp-sync-empty">暂无</div>';
-  }
-  html += '</div>';
-  
-  // 最后发送的背景
-  html += '<div class="mp-sync-item">';
-  html += '<div class="mp-sync-item-label">最后发送的背景数据:</div>';
   if (lastSentBackground) {
-    html += '<div class="mp-sync-item-content">';
     html += '<div class="mp-sync-meta">时间: ' + new Date(lastSentBackground.timestamp).toLocaleTimeString() + '</div>';
     
+    // 世界书(前)
     if (lastSentBackground.worldInfoBefore) {
-      html += '<div class="mp-sync-field"><span class="mp-sync-field-name">世界书(前):</span> ' + escapeHtml(lastSentBackground.worldInfoBefore.substring(0, 100)) + '...</div>';
-    }
-    if (lastSentBackground.worldInfoAfter) {
-      html += '<div class="mp-sync-field"><span class="mp-sync-field-name">世界书(后):</span> ' + escapeHtml(lastSentBackground.worldInfoAfter.substring(0, 100)) + '...</div>';
-    }
-    if (lastSentBackground.description) {
-      html += '<div class="mp-sync-field"><span class="mp-sync-field-name">角色描述:</span> ' + escapeHtml(lastSentBackground.description.substring(0, 100)) + '...</div>';
-    }
-    if (lastSentBackground.personality) {
-      html += '<div class="mp-sync-field"><span class="mp-sync-field-name">角色性格:</span> ' + escapeHtml(lastSentBackground.personality.substring(0, 100)) + '...</div>';
-    }
-    if (lastSentBackground.scenario) {
-      html += '<div class="mp-sync-field"><span class="mp-sync-field-name">场景:</span> ' + escapeHtml(lastSentBackground.scenario.substring(0, 100)) + '...</div>';
-    }
-    if (lastSentBackground.persona) {
-      html += '<div class="mp-sync-field"><span class="mp-sync-field-name">用户人设:</span> ' + escapeHtml(lastSentBackground.persona.substring(0, 100)) + '...</div>';
+      html += '<div class="mp-sync-field-wrap">';
+      html += '<div class="mp-sync-field-header" data-field="sent-wi-before">';
+      html += '<span class="mp-sync-field-name">📖 世界书(前)</span>';
+      html += '<span class="mp-sync-field-len">' + lastSentBackground.worldInfoBefore.length + ' 字符</span>';
+      html += '<span class="mp-sync-expand-icon">▼</span>';
+      html += '</div>';
+      html += '<div class="mp-sync-field-content" id="sent-wi-before">' + escapeHtml(lastSentBackground.worldInfoBefore) + '</div>';
+      html += '</div>';
     }
     
-    html += '</div>';
+    // 世界书(后)
+    if (lastSentBackground.worldInfoAfter) {
+      html += '<div class="mp-sync-field-wrap">';
+      html += '<div class="mp-sync-field-header" data-field="sent-wi-after">';
+      html += '<span class="mp-sync-field-name">📖 世界书(后)</span>';
+      html += '<span class="mp-sync-field-len">' + lastSentBackground.worldInfoAfter.length + ' 字符</span>';
+      html += '<span class="mp-sync-expand-icon">▼</span>';
+      html += '</div>';
+      html += '<div class="mp-sync-field-content" id="sent-wi-after">' + escapeHtml(lastSentBackground.worldInfoAfter) + '</div>';
+      html += '</div>';
+    }
+    
+    // 角色描述
+    if (lastSentBackground.description) {
+      html += '<div class="mp-sync-field-wrap">';
+      html += '<div class="mp-sync-field-header" data-field="sent-desc">';
+      html += '<span class="mp-sync-field-name">👤 角色描述</span>';
+      html += '<span class="mp-sync-field-len">' + lastSentBackground.description.length + ' 字符</span>';
+      html += '<span class="mp-sync-expand-icon">▼</span>';
+      html += '</div>';
+      html += '<div class="mp-sync-field-content" id="sent-desc">' + escapeHtml(lastSentBackground.description) + '</div>';
+      html += '</div>';
+    }
+    
+    // 角色性格
+    if (lastSentBackground.personality) {
+      html += '<div class="mp-sync-field-wrap">';
+      html += '<div class="mp-sync-field-header" data-field="sent-personality">';
+      html += '<span class="mp-sync-field-name">💭 角色性格</span>';
+      html += '<span class="mp-sync-field-len">' + lastSentBackground.personality.length + ' 字符</span>';
+      html += '<span class="mp-sync-expand-icon">▼</span>';
+      html += '</div>';
+      html += '<div class="mp-sync-field-content" id="sent-personality">' + escapeHtml(lastSentBackground.personality) + '</div>';
+      html += '</div>';
+    }
+    
+    // 场景
+    if (lastSentBackground.scenario) {
+      html += '<div class="mp-sync-field-wrap">';
+      html += '<div class="mp-sync-field-header" data-field="sent-scenario">';
+      html += '<span class="mp-sync-field-name">🎬 场景</span>';
+      html += '<span class="mp-sync-field-len">' + lastSentBackground.scenario.length + ' 字符</span>';
+      html += '<span class="mp-sync-expand-icon">▼</span>';
+      html += '</div>';
+      html += '<div class="mp-sync-field-content" id="sent-scenario">' + escapeHtml(lastSentBackground.scenario) + '</div>';
+      html += '</div>';
+    }
+    
+    // 用户人设
+    if (lastSentBackground.persona) {
+      html += '<div class="mp-sync-field-wrap">';
+      html += '<div class="mp-sync-field-header" data-field="sent-persona">';
+      html += '<span class="mp-sync-field-name">🎭 用户人设</span>';
+      html += '<span class="mp-sync-field-len">' + lastSentBackground.persona.length + ' 字符</span>';
+      html += '<span class="mp-sync-expand-icon">▼</span>';
+      html += '</div>';
+      html += '<div class="mp-sync-field-content" id="sent-persona">' + escapeHtml(lastSentBackground.persona) + '</div>';
+      html += '</div>';
+    }
+    
+    // 聊天历史
+    if (lastSentBackground.chatHistory && lastSentBackground.chatHistory.length > 0) {
+      html += '<div class="mp-sync-field-wrap">';
+      html += '<div class="mp-sync-field-header" data-field="sent-chat-history">';
+      html += '<span class="mp-sync-field-name">💬 聊天历史</span>';
+      html += '<span class="mp-sync-field-len">' + lastSentBackground.chatHistory.length + ' 条</span>';
+      html += '<span class="mp-sync-expand-icon">▼</span>';
+      html += '</div>';
+      html += '<div class="mp-sync-field-content" id="sent-chat-history">';
+      lastSentBackground.chatHistory.forEach(msg => {
+        const roleTag = msg.role === 'user' ? '[用户]' : '[角色]';
+        html += '<div class="mp-sync-chat-msg">';
+        html += '<span class="mp-sync-chat-role ' + msg.role + '">' + roleTag + '</span>';
+        html += '<span class="mp-sync-chat-name">' + escapeHtml(msg.name) + ':</span>';
+        html += '<span class="mp-sync-chat-content">' + escapeHtml(msg.content.substring(0, 200)) + (msg.content.length > 200 ? '...' : '') + '</span>';
+        html += '</div>';
+      });
+      html += '</div>';
+      html += '</div>';
+    }
+    
+    // 如果没有任何内容
+    if (!lastSentBackground.worldInfoBefore && !lastSentBackground.worldInfoAfter && 
+        !lastSentBackground.description && !lastSentBackground.personality && 
+        !lastSentBackground.scenario && !lastSentBackground.persona &&
+        (!lastSentBackground.chatHistory || lastSentBackground.chatHistory.length === 0)) {
+      html += '<div class="mp-sync-empty">背景数据为空</div>';
+    }
+    
   } else {
-    html += '<div class="mp-sync-empty">暂无</div>';
+    html += '<div class="mp-sync-empty">暂无发送的背景数据</div>';
   }
-  html += '</div>';
   
   html += '</div>';
   
-  // 收到的远程背景
+  // ========== 收到的远程背景 ==========
   html += '<div class="mp-sync-section">';
   html += '<div class="mp-sync-section-title">📥 收到的远程背景 (' + remoteContextCache.size + ')</div>';
   
   if (remoteContextCache.size === 0) {
     html += '<div class="mp-sync-empty">暂无收到其他玩家的背景数据</div>';
   } else {
+    let playerIndex = 0;
     remoteContextCache.forEach((data, odId) => {
-      html += '<div class="mp-sync-item">';
-      html += '<div class="mp-sync-item-label">来自: ' + escapeHtml(data.senderName) + '</div>';
-      html += '<div class="mp-sync-item-content">';
-      html += '<div class="mp-sync-meta">时间: ' + new Date(data.timestamp).toLocaleTimeString() + '</div>';
-      
+      playerIndex++;
       const bg = data.background;
+      const prefix = 'recv-' + playerIndex + '-';
+      
+      html += '<div class="mp-sync-player">';
+      html += '<div class="mp-sync-player-header">';
+      html += '<span class="mp-sync-player-name">👤 ' + escapeHtml(data.senderName) + '</span>';
+      html += '<span class="mp-sync-player-time">' + new Date(data.timestamp).toLocaleTimeString() + '</span>';
+      html += '</div>';
+      
+      // 世界书(前)
       if (bg.worldInfoBefore) {
-        html += '<div class="mp-sync-field"><span class="mp-sync-field-name">世界书(前):</span> ' + escapeHtml(bg.worldInfoBefore.substring(0, 100)) + '...</div>';
-      }
-      if (bg.worldInfoAfter) {
-        html += '<div class="mp-sync-field"><span class="mp-sync-field-name">世界书(后):</span> ' + escapeHtml(bg.worldInfoAfter.substring(0, 100)) + '...</div>';
-      }
-      if (bg.description) {
-        html += '<div class="mp-sync-field"><span class="mp-sync-field-name">角色描述:</span> ' + escapeHtml(bg.description.substring(0, 100)) + '...</div>';
-      }
-      if (bg.personality) {
-        html += '<div class="mp-sync-field"><span class="mp-sync-field-name">角色性格:</span> ' + escapeHtml(bg.personality.substring(0, 100)) + '...</div>';
-      }
-      if (bg.scenario) {
-        html += '<div class="mp-sync-field"><span class="mp-sync-field-name">场景:</span> ' + escapeHtml(bg.scenario.substring(0, 100)) + '...</div>';
-      }
-      if (bg.persona) {
-        html += '<div class="mp-sync-field"><span class="mp-sync-field-name">用户人设:</span> ' + escapeHtml(bg.persona.substring(0, 100)) + '...</div>';
+        html += '<div class="mp-sync-field-wrap">';
+        html += '<div class="mp-sync-field-header" data-field="' + prefix + 'wi-before">';
+        html += '<span class="mp-sync-field-name">📖 世界书(前)</span>';
+        html += '<span class="mp-sync-field-len">' + bg.worldInfoBefore.length + ' 字符</span>';
+        html += '<span class="mp-sync-expand-icon">▼</span>';
+        html += '</div>';
+        html += '<div class="mp-sync-field-content" id="' + prefix + 'wi-before">' + escapeHtml(bg.worldInfoBefore) + '</div>';
+        html += '</div>';
       }
       
-      html += '</div>';
+      // 世界书(后)
+      if (bg.worldInfoAfter) {
+        html += '<div class="mp-sync-field-wrap">';
+        html += '<div class="mp-sync-field-header" data-field="' + prefix + 'wi-after">';
+        html += '<span class="mp-sync-field-name">📖 世界书(后)</span>';
+        html += '<span class="mp-sync-field-len">' + bg.worldInfoAfter.length + ' 字符</span>';
+        html += '<span class="mp-sync-expand-icon">▼</span>';
+        html += '</div>';
+        html += '<div class="mp-sync-field-content" id="' + prefix + 'wi-after">' + escapeHtml(bg.worldInfoAfter) + '</div>';
+        html += '</div>';
+      }
+      
+      // 角色描述
+      if (bg.description) {
+        html += '<div class="mp-sync-field-wrap">';
+        html += '<div class="mp-sync-field-header" data-field="' + prefix + 'desc">';
+        html += '<span class="mp-sync-field-name">👤 角色描述</span>';
+        html += '<span class="mp-sync-field-len">' + bg.description.length + ' 字符</span>';
+        html += '<span class="mp-sync-expand-icon">▼</span>';
+        html += '</div>';
+        html += '<div class="mp-sync-field-content" id="' + prefix + 'desc">' + escapeHtml(bg.description) + '</div>';
+        html += '</div>';
+      }
+      
+      // 角色性格
+      if (bg.personality) {
+        html += '<div class="mp-sync-field-wrap">';
+        html += '<div class="mp-sync-field-header" data-field="' + prefix + 'personality">';
+        html += '<span class="mp-sync-field-name">💭 角色性格</span>';
+        html += '<span class="mp-sync-field-len">' + bg.personality.length + ' 字符</span>';
+        html += '<span class="mp-sync-expand-icon">▼</span>';
+        html += '</div>';
+        html += '<div class="mp-sync-field-content" id="' + prefix + 'personality">' + escapeHtml(bg.personality) + '</div>';
+        html += '</div>';
+      }
+      
+      // 场景
+      if (bg.scenario) {
+        html += '<div class="mp-sync-field-wrap">';
+        html += '<div class="mp-sync-field-header" data-field="' + prefix + 'scenario">';
+        html += '<span class="mp-sync-field-name">🎬 场景</span>';
+        html += '<span class="mp-sync-field-len">' + bg.scenario.length + ' 字符</span>';
+        html += '<span class="mp-sync-expand-icon">▼</span>';
+        html += '</div>';
+        html += '<div class="mp-sync-field-content" id="' + prefix + 'scenario">' + escapeHtml(bg.scenario) + '</div>';
+        html += '</div>';
+      }
+      
+      // 用户人设
+      if (bg.persona) {
+        html += '<div class="mp-sync-field-wrap">';
+        html += '<div class="mp-sync-field-header" data-field="' + prefix + 'persona">';
+        html += '<span class="mp-sync-field-name">🎭 用户人设</span>';
+        html += '<span class="mp-sync-field-len">' + bg.persona.length + ' 字符</span>';
+        html += '<span class="mp-sync-expand-icon">▼</span>';
+        html += '</div>';
+        html += '<div class="mp-sync-field-content" id="' + prefix + 'persona">' + escapeHtml(bg.persona) + '</div>';
+        html += '</div>';
+      }
+      
+      // 聊天历史
+      if (bg.chatHistory && bg.chatHistory.length > 0) {
+        html += '<div class="mp-sync-field-wrap">';
+        html += '<div class="mp-sync-field-header" data-field="' + prefix + 'chat-history">';
+        html += '<span class="mp-sync-field-name">💬 聊天历史</span>';
+        html += '<span class="mp-sync-field-len">' + bg.chatHistory.length + ' 条</span>';
+        html += '<span class="mp-sync-expand-icon">▼</span>';
+        html += '</div>';
+        html += '<div class="mp-sync-field-content" id="' + prefix + 'chat-history">';
+        bg.chatHistory.forEach(msg => {
+          const roleTag = msg.role === 'user' ? '[用户]' : '[角色]';
+          html += '<div class="mp-sync-chat-msg">';
+          html += '<span class="mp-sync-chat-role ' + msg.role + '">' + roleTag + '</span>';
+          html += '<span class="mp-sync-chat-name">' + escapeHtml(msg.name) + ':</span>';
+          html += '<span class="mp-sync-chat-content">' + escapeHtml(msg.content.substring(0, 200)) + (msg.content.length > 200 ? '...' : '') + '</span>';
+          html += '</div>';
+        });
+        html += '</div>';
+        html += '</div>';
+      }
+      
+      // 如果没有任何内容
+      if (!bg.worldInfoBefore && !bg.worldInfoAfter && !bg.description && 
+          !bg.personality && !bg.scenario && !bg.persona &&
+          (!bg.chatHistory || bg.chatHistory.length === 0)) {
+        html += '<div class="mp-sync-empty">该玩家的背景数据为空</div>';
+      }
+      
       html += '</div>';
     });
   }
@@ -2149,62 +2367,171 @@ function openSyncViewPanel() {
   if (!$('#mp-sync-view-styles').length) {
     const styles = $('<style id="mp-sync-view-styles"></style>');
     styles.text(`
-      .mp-sync-section {
-        margin-bottom: 20px;
-      }
-      .mp-sync-section-title {
-        color: #4ade80;
-        font-size: 14px;
-        font-weight: bold;
-        margin-bottom: 12px;
-        padding-bottom: 8px;
-        border-bottom: 1px solid #333;
-      }
-      .mp-sync-item {
-        background: #0f0f1a;
-        border-radius: 8px;
-        padding: 12px;
-        margin-bottom: 10px;
-      }
-      .mp-sync-item-label {
-        color: #888;
-        font-size: 12px;
-        margin-bottom: 8px;
-      }
-      .mp-sync-item-content {
-        color: #ddd;
-        font-size: 13px;
-      }
-      .mp-sync-meta {
-        color: #666;
-        font-size: 11px;
-        margin-bottom: 8px;
-      }
-      .mp-sync-text {
-        background: #1a1a2e;
-        padding: 8px;
-        border-radius: 4px;
-        white-space: pre-wrap;
-        word-break: break-all;
-      }
-      .mp-sync-field {
-        margin-bottom: 6px;
-        padding: 6px;
-        background: #1a1a2e;
-        border-radius: 4px;
-        font-size: 12px;
-      }
-      .mp-sync-field-name {
-        color: #6366f1;
-        font-weight: bold;
-      }
-      .mp-sync-empty {
-        color: #666;
-        font-style: italic;
-        text-align: center;
-        padding: 10px;
-      }
-    `);
+  .mp-sync-view {
+    color: #ddd;
+    font-size: 13px;
+  }
+  .mp-sync-section {
+    margin-bottom: 20px;
+  }
+  .mp-sync-section:last-child {
+    margin-bottom: 0;
+  }
+  .mp-sync-section-title {
+    color: #4ade80;
+    font-size: 14px;
+    font-weight: bold;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #333;
+  }
+  .mp-sync-meta {
+    color: #666;
+    font-size: 11px;
+    margin-bottom: 10px;
+  }
+  .mp-sync-player {
+    background: #0f0f1a;
+    border-radius: 10px;
+    padding: 12px;
+    margin-bottom: 12px;
+  }
+  .mp-sync-player:last-child {
+    margin-bottom: 0;
+  }
+  .mp-sync-player-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #333;
+  }
+  .mp-sync-player-name {
+    color: #6366f1;
+    font-weight: bold;
+  }
+  .mp-sync-player-time {
+    color: #666;
+    font-size: 11px;
+  }
+  .mp-sync-field-wrap {
+    margin-bottom: 8px;
+    background: #16213e;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .mp-sync-field-wrap:last-child {
+    margin-bottom: 0;
+  }
+  .mp-sync-field-header {
+    display: flex;
+    align-items: center;
+    padding: 10px 12px;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.2s;
+  }
+  .mp-sync-field-header:hover {
+    background: #1a2744;
+  }
+  .mp-sync-field-name {
+    color: #e94560;
+    font-weight: bold;
+    flex: 1;
+  }
+  .mp-sync-field-len {
+    color: #666;
+    font-size: 11px;
+    margin-right: 10px;
+  }
+  .mp-sync-expand-icon {
+    color: #888;
+    font-size: 10px;
+    transition: transform 0.2s;
+  }
+  .mp-sync-field-wrap.expanded .mp-sync-expand-icon {
+    transform: rotate(180deg);
+  }
+  .mp-sync-field-content {
+    display: none;
+    padding: 12px;
+    background: #0a0a14;
+    border-top: 1px solid #333;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 300px;
+    overflow-y: auto;
+    font-size: 12px;
+    line-height: 1.5;
+    color: #bbb;
+  }
+  .mp-sync-field-wrap.expanded .mp-sync-field-content {
+    display: block;
+  }
+  .mp-sync-empty {
+    color: #666;
+    font-style: italic;
+    text-align: center;
+    padding: 20px;
+    background: #0f0f1a;
+    border-radius: 8px;
+  }
+  
+  /* 聊天历史样式 */
+  .mp-sync-chat-msg {
+    padding: 6px 0;
+    border-bottom: 1px solid #1a1a2e;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .mp-sync-chat-msg:last-child {
+    border-bottom: none;
+  }
+  .mp-sync-chat-role {
+    font-weight: bold;
+    font-size: 11px;
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+  .mp-sync-chat-role.user {
+    background: #2563eb;
+    color: #fff;
+  }
+  .mp-sync-chat-role.assistant {
+    background: #7c3aed;
+    color: #fff;
+  }
+  .mp-sync-chat-name {
+    color: #4ade80;
+    font-weight: bold;
+  }
+  .mp-sync-chat-content {
+    color: #bbb;
+    flex: 1;
+    min-width: 0;
+  }
+  
+  /* 滚动条样式 */
+  .mp-sync-content::-webkit-scrollbar,
+  .mp-sync-field-content::-webkit-scrollbar {
+    width: 6px;
+  }
+  .mp-sync-content::-webkit-scrollbar-track,
+  .mp-sync-field-content::-webkit-scrollbar-track {
+    background: #0a0a14;
+  }
+  .mp-sync-content::-webkit-scrollbar-thumb,
+  .mp-sync-field-content::-webkit-scrollbar-thumb {
+    background: #333;
+    border-radius: 3px;
+  }
+  .mp-sync-content::-webkit-scrollbar-thumb:hover,
+  .mp-sync-field-content::-webkit-scrollbar-thumb:hover {
+    background: #444;
+  }
+`);
     $('head').append(styles);
   }
   
@@ -2982,3 +3309,4 @@ log('  mpDebug.clearRemoteCache() - 清除远程上下文');
 log('  mpDebug.showSentData() - 显示已发送的数据');
 
 log('========================================');
+
