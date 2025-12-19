@@ -915,7 +915,6 @@ function waitForTavernHelperThenCapture(messageId, lastMsg) {
 // ========================================
 // 远程消息处理
 // ========================================
-
 function handleRemoteUserMessage(msg) {
   const msgKey = msg.senderId + '_' + msg.timestamp;
   if (processedMsgCache.has(msgKey)) return;
@@ -936,27 +935,33 @@ function handleRemoteUserMessage(msg) {
   if (!addOneMessage) return;
   
   const message = {
-  name: msg.userName,
-  is_user: true,
-  is_system: false,
-  send_date: getMessageTimeStamp(),
-  mes: msg.content,
-  extra: {
-    isRemote: true,
-    remoteSender: msg.senderName,
-    remoteSenderId: msg.senderId
-  }
-};
+    name: msg.userName,
+    is_user: true,
+    is_system: false,
+    send_date: getMessageTimeStamp(),
+    mes: '[远程消息]',
+    extra: {
+      isRemote: true,
+      remoteSender: msg.senderName,
+      remoteSenderId: msg.senderId,
+      remoteContent: msg.content
+    }
+  };
   
   chat.push(message);
   const messageId = chat.length - 1;
   addOneMessage(message, { forceId: messageId, scroll: true });
   
+  // 显示真实内容到界面
+  const mesText = document.querySelector(`.mes[mesid="${messageId}"] .mes_text`);
+  if (mesText) {
+    mesText.innerHTML = simpleRender(msg.content);
+  }
+  
   addRemoteTag(messageId, '用户', 'user');
   
   if (ctx.saveChat) ctx.saveChat();
 }
-
 function handleRemoteAiStream(msg) {
   const chat = getChat();
   if (!chat) return;
@@ -3360,6 +3365,7 @@ log('  mpDebug.clearRemoteCache() - 清除远程上下文');
 log('  mpDebug.showSentData() - 显示已发送的数据');
 
 log('========================================');
+
 
 
 
