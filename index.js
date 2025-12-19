@@ -2148,13 +2148,13 @@ function buildSyncViewHTML() {
       html += '</div>';
       html += '<div class="mp-sync-field-content" id="sent-chat-history">';
       lastSentBackground.chatHistory.forEach(msg => {
-        const roleTag = msg.role === 'user' ? '[用户]' : '[角色]';
-        html += '<div class="mp-sync-chat-msg">';
-        html += '<span class="mp-sync-chat-role ' + msg.role + '">' + roleTag + '</span>';
-        html += '<span class="mp-sync-chat-name">' + escapeHtml(msg.name) + ':</span>';
-        html += '<span class="mp-sync-chat-content">' + escapeHtml(msg.content.substring(0, 200)) + (msg.content.length > 200 ? '...' : '') + '</span>';
-        html += '</div>';
-      });
+  const roleTag = msg.role === 'user' ? '[用户]' : '[角色]';
+  html += '<div class="mp-sync-chat-msg">';
+  html += '<div class="mp-sync-chat-role ' + msg.role + '">' + roleTag + '</div>';
+  html += '<div class="mp-sync-chat-name">' + escapeHtml(msg.name) + '</div>';
+  html += '<div class="mp-sync-chat-content">' + escapeHtml(msg.content) + '</div>';
+  html += '</div>';
+});
       html += '</div>';
       html += '</div>';
     }
@@ -2274,13 +2274,13 @@ function buildSyncViewHTML() {
         html += '</div>';
         html += '<div class="mp-sync-field-content" id="' + prefix + 'chat-history">';
         bg.chatHistory.forEach(msg => {
-          const roleTag = msg.role === 'user' ? '[用户]' : '[角色]';
-          html += '<div class="mp-sync-chat-msg">';
-          html += '<span class="mp-sync-chat-role ' + msg.role + '">' + roleTag + '</span>';
-          html += '<span class="mp-sync-chat-name">' + escapeHtml(msg.name) + ':</span>';
-          html += '<span class="mp-sync-chat-content">' + escapeHtml(msg.content.substring(0, 200)) + (msg.content.length > 200 ? '...' : '') + '</span>';
-          html += '</div>';
-        });
+  const roleTag = msg.role === 'user' ? '[用户]' : '[角色]';
+  html += '<div class="mp-sync-chat-msg">';
+  html += '<div class="mp-sync-chat-role ' + msg.role + '">' + roleTag + '</div>';
+  html += '<div class="mp-sync-chat-name">' + escapeHtml(msg.name) + '</div>';
+  html += '<div class="mp-sync-chat-content">' + escapeHtml(msg.content) + '</div>';
+  html += '</div>';
+});
         html += '</div>';
         html += '</div>';
       }
@@ -2459,9 +2459,11 @@ function openSyncViewPanel() {
     background: #0a0a14;
     border-top: 1px solid #333;
     white-space: pre-wrap;
-    word-break: break-all;
-    max-height: 300px;
+    word-break: break-word;
+    overflow-wrap: break-word;
+    overflow-x: hidden;
     overflow-y: auto;
+    max-height: 300px;
     font-size: 12px;
     line-height: 1.5;
     color: #bbb;
@@ -2477,23 +2479,26 @@ function openSyncViewPanel() {
     background: #0f0f1a;
     border-radius: 8px;
   }
-  
-  /* 聊天历史样式 */
+
+  /* 聊天历史样式 - 三层结构 */
   .mp-sync-chat-msg {
-    padding: 6px 0;
-    border-bottom: 1px solid #1a1a2e;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
+    padding: 10px;
+    margin-bottom: 8px;
+    background: #1a1a2e;
+    border-radius: 6px;
+    border-left: 3px solid #333;
   }
   .mp-sync-chat-msg:last-child {
-    border-bottom: none;
+    margin-bottom: 0;
   }
   .mp-sync-chat-role {
+    display: block;
     font-weight: bold;
     font-size: 11px;
-    padding: 2px 6px;
+    padding: 2px 8px;
     border-radius: 4px;
+    margin-bottom: 4px;
+    width: fit-content;
   }
   .mp-sync-chat-role.user {
     background: #2563eb;
@@ -2504,15 +2509,23 @@ function openSyncViewPanel() {
     color: #fff;
   }
   .mp-sync-chat-name {
+    display: block;
     color: #4ade80;
     font-weight: bold;
+    font-size: 13px;
+    margin-bottom: 6px;
+    word-break: break-word;
   }
   .mp-sync-chat-content {
-    color: #bbb;
-    flex: 1;
-    min-width: 0;
+    display: block;
+    color: #ccc;
+    font-size: 12px;
+    line-height: 1.6;
+    word-break: break-word;
+    overflow-wrap: break-word;
+    white-space: pre-wrap;
   }
-  
+
   /* 滚动条样式 */
   .mp-sync-content::-webkit-scrollbar,
   .mp-sync-field-content::-webkit-scrollbar {
@@ -3316,6 +3329,7 @@ log('  mpDebug.clearRemoteCache() - 清除远程上下文');
 log('  mpDebug.showSentData() - 显示已发送的数据');
 
 log('========================================');
+
 
 
 
