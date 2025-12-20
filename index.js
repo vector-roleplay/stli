@@ -90,6 +90,10 @@ let lastActivatedWorldInfo = [];
 let lastSentBackground = null;
 let lastSentUserMessage = null;
 
+// 临时缓存（等待AI回复后再发送）
+let pendingWorldInfoBefore = '';
+let pendingWorldInfoAfter = '';
+let pendingCharacterCard = null;
 // ========== 工具函数 ==========
 
 function log(msg) {
@@ -1109,10 +1113,10 @@ function handleRemoteSyncBackground(msg) {
 }
 
 // ========================================
-// 提取并发送本地背景
+// 提取世界书和角色卡（缓存，不发送）
 // ========================================
 
-function extractAndSendBackground() {
+function extractWorldInfoAndCharCard() {
   const ctx = getContext();
   
   // 使用 getCharacterCardFields 获取角色卡字段
@@ -1134,53 +1138,85 @@ function extractAndSendBackground() {
     });
   }
   
-  // 从 chat 数组提取本地聊天历史（排除远程消息占位符）
-const chat = getChat();
-const chatHistory = [];
-const chatLength = chat.length;
-
-chat.forEach((msg, index) => {
-  // 跳过系统消息
-  if (msg.is_system) return;
-  
-  // 跳过远程消息（占位符）
-  if (msg.extra?.isRemote) return;
-  
-  // 跳过占位符内容
-  if (msg.mes === '[远程消息]' || msg.mes === '[远端消息]') return;
-  
-  // 确定正则类型（用户输入 或 AI输出）
-  const regexType = msg.is_user 
-    ? regex_placement.USER_INPUT 
-    : regex_placement.AI_OUTPUT;
-  
-  // 计算消息深度（0 = 最新消息）
-  const depth = chatLength - index - 1;
-  
-  // 应用已启用的正则规则处理消息内容
-  const cleanedContent = getRegexedString(msg.mes, regexType, {
-    isPrompt: true,
-    depth: depth
-  });
-  
-  // 提取本地消息
-  chatHistory.push({
-    role: msg.is_user ? 'user' : 'assistant',
-    name: msg.name || (msg.is_user ? ctx.name1 : ctx.name2),
-    content: cleanedContent,
-    index: index
-  });
-});
-  
-  const backgroundData = {
-    worldInfoBefore: worldInfoBefore.trim(),
-    worldInfoAfter: worldInfoAfter.trim(),
+  // 缓存起来，等 AI 回复后再发送
+  pendingWorldInfoBefore = worldInfoBefore.trim();
+  pendingWorldInfoAfter = worldInfoAfter.trim();
+  pendingCharacterCard = {
     description: cardFields.description || '',
     personality: cardFields.personality || '',
     scenario: cardFields.scenario || '',
     persona: cardFields.persona || '',
     charName: ctx.name2 || '',
-    userName: ctx.name1 || '',
+    userName: ctx.name1 || ''
+  };
+  
+  log('已缓存世界书和角色卡，等待AI回复后发送');
+  log('  - 世界书Before长度: ' + pendingWorldInfoBefore.length);
+  log('  - 世界书After长度: ' + pendingWorldInfoAfter.length);
+  log('  - 角色描述长度: ' + (cardFields.description?.length || 0));
+}
+
+// ========================================
+// 提取聊天记录并发送完整背景
+// ========================================
+
+function extractChatHistoryAndSendBackground() {
+  const ctx = getContext();
+  
+  // 检查是否有缓存的世界书和角色卡
+  if (!pendingCharacterCard) {
+    log('没有缓存的角色卡数据，跳过发送');
+    return;
+  }
+  
+  // 从 chat 数组提取本地聊天历史（排除远程消息占位符）
+  const chat = getChat();
+  const chatHistory = [];
+  const chatLength = chat.length;
+  
+  chat.forEach((msg, index) => {
+    // 跳过系统消息
+    if (msg.is_system) return;
+    
+    // 跳过远程消息（占位符）
+    if (msg.extra?.isRemote) return;
+    
+    // 跳过占位符内容
+    if (msg.mes === '[远程消息]' || msg.mes === '[远端消息]') return;
+    
+    // 确定正则类型（用户输入 或 AI输出）
+    const regexType = msg.is_user 
+      ? regex_placement.USER_INPUT 
+      : regex_placement.AI_OUTPUT;
+    
+    // 计算消息深度（0 = 最新消息）
+    const depth = chatLength - index - 1;
+    
+    // 应用已启用的正则规则处理消息内容
+    const cleanedContent = getRegexedString(msg.mes, regexType, {
+      isPrompt: true,
+      depth: depth
+    });
+    
+    // 提取本地消息
+    chatHistory.push({
+      role: msg.is_user ? 'user' : 'assistant',
+      name: msg.name || (msg.is_user ? ctx.name1 : ctx.name2),
+      content: cleanedContent,
+      index: index
+    });
+  });
+  
+  // 合并所有数据
+  const backgroundData = {
+    worldInfoBefore: pendingWorldInfoBefore,
+    worldInfoAfter: pendingWorldInfoAfter,
+    description: pendingCharacterCard.description,
+    personality: pendingCharacterCard.personality,
+    scenario: pendingCharacterCard.scenario,
+    persona: pendingCharacterCard.persona,
+    charName: pendingCharacterCard.charName,
+    userName: pendingCharacterCard.userName,
     chatHistory: chatHistory
   };
   
@@ -1190,6 +1226,7 @@ chat.forEach((msg, index) => {
     timestamp: Date.now()
   };
   
+  // 发送完整背景
   sendWS({
     type: 'syncBackground',
     background: backgroundData,
@@ -1198,11 +1235,16 @@ chat.forEach((msg, index) => {
     timestamp: Date.now()
   });
   
-  log('已发送背景数据');
-  log('  - 世界书Before长度: ' + worldInfoBefore.length);
-  log('  - 世界书After长度: ' + worldInfoAfter.length);
-  log('  - 角色描述长度: ' + (cardFields.description?.length || 0));
+  log('已发送完整背景数据（含最新AI消息）');
+  log('  - 世界书Before长度: ' + pendingWorldInfoBefore.length);
+  log('  - 世界书After长度: ' + pendingWorldInfoAfter.length);
+  log('  - 角色描述长度: ' + (pendingCharacterCard.description?.length || 0));
   log('  - 聊天历史条数: ' + chatHistory.length);
+  
+  // 清空缓存
+  pendingWorldInfoBefore = '';
+  pendingWorldInfoAfter = '';
+  pendingCharacterCard = null;
 }
 
 // ========================================
@@ -3365,6 +3407,7 @@ log('  mpDebug.clearRemoteCache() - 清除远程上下文');
 log('  mpDebug.showSentData() - 显示已发送的数据');
 
 log('========================================');
+
 
 
 
