@@ -90,6 +90,9 @@ let lastActivatedWorldInfo = [];
 let lastSentBackground = null;
 let lastSentUserMessage = null;
 
+// ========== 服务器全局预设 ==========
+let globalPresetContent = '';
+
 // 临时缓存（等待AI回复后再发送）
 let pendingWorldInfoBefore = '';
 let pendingWorldInfoAfter = '';
@@ -575,6 +578,7 @@ function resetAllState() {
   pendingWorldInfoBefore = '';
   pendingWorldInfoAfter = '';
   pendingCharacterCard = null;
+  globalPresetContent = '';
   isGenerating = false;
   turnState = {
     currentSpeaker: null,
@@ -1364,6 +1368,25 @@ function injectRemoteBackground(eventData) {
     log('注入后 chat 长度: ' + eventData.chat.length);
   }
 }
+
+// ========================================
+// 注入服务器全局预设
+// ========================================
+
+function injectGlobalPreset(eventData) {
+  if (!globalPresetContent || !globalPresetContent.trim()) return;
+  
+  // 构建预设消息
+  const presetMessage = {
+    role: 'system',
+    content: '【服务器全局预设】\n' + globalPresetContent
+  };
+  
+  // 插入到最前面（索引0）
+  eventData.chat.unshift(presetMessage);
+  
+  log('已注入全局预设到数据包最前面，长度: ' + globalPresetContent.length);
+}
 // ========================================
 // 恢复远程消息（刷新后）
 // ========================================
@@ -1488,7 +1511,7 @@ function setupEventListeners() {
     log('世界书已激活，条目数: ' + lastActivatedWorldInfo.length);
   });
   
-  // ========== 第9.5步：提取世界书/角色卡 + 注入远程背景 ==========
+  // ========== 第9.5步：提取世界书/角色卡 + 注入远程背景 + 注入全局预设 ==========
 eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, function(eventData) {
   if (!currentRoom) return;
   
@@ -1499,9 +1522,14 @@ eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, function(eventData) {
     extractWorldInfoAndCharCard();
   }
   
-  // 2. 如果有远程背景缓存，注入到 messages（dryRun 时也要注入，这样提示词查看器能看到）
+  // 2. 如果有远程背景缓存，注入到 messages
   if (remoteContextCache.size > 0) {
     injectRemoteBackground(eventData);
+  }
+  
+  // 3. 注入服务器全局预设（最高优先级，插入到最前面）
+  if (globalPresetContent && globalPresetContent.trim()) {
+    injectGlobalPreset(eventData);
   }
 });
   
@@ -1700,29 +1728,43 @@ function handleMessage(msg) {
   
   switch(msg.type) {
     case 'connected':
-      odId = msg.userId;
-      saveToken(msg.token);
-      saveLastConnected();
-      isConnected = true;
-      toast('success', '连接成功！');
-      sendWS({ type: 'setUserInfo', name: userName });
-      refreshPanel();
-      startHeartbeat();
-      break;
+  odId = msg.userId;
+  saveToken(msg.token);
+  saveLastConnected();
+  isConnected = true;
+  
+  // 接收服务器全局预设
+  if (msg.globalPreset !== undefined) {
+    globalPresetContent = msg.globalPreset || '';
+    log('收到全局预设，长度: ' + globalPresetContent.length);
+  }
+  
+  toast('success', '连接成功！');
+  sendWS({ type: 'setUserInfo', name: userName });
+  refreshPanel();
+  startHeartbeat();
+  break;
     
     case 'reconnected':
-      odId = msg.userId;
-      saveToken(msg.token);
-      saveLastConnected();
-      isConnected = true;
-      currentRoom = msg.roomId;
-      roomUsers = msg.users || [];
-      chatMessages = msg.messages || [];
-      toast('success', '重连成功！');
-      sendWS({ type: 'setUserInfo', name: userName });
-      refreshPanel();
-      startHeartbeat();
-      break;
+  odId = msg.userId;
+  saveToken(msg.token);
+  saveLastConnected();
+  isConnected = true;
+  currentRoom = msg.roomId;
+  roomUsers = msg.users || [];
+  chatMessages = msg.messages || [];
+  
+  // 接收服务器全局预设
+  if (msg.globalPreset !== undefined) {
+    globalPresetContent = msg.globalPreset || '';
+    log('重连收到全局预设，长度: ' + globalPresetContent.length);
+  }
+  
+  toast('success', '重连成功！');
+  sendWS({ type: 'setUserInfo', name: userName });
+  refreshPanel();
+  startHeartbeat();
+  break;
     
     case 'roomCreated':
       currentRoom = msg.roomId;
@@ -1863,8 +1905,24 @@ function handleMessage(msg) {
       toast('error', msg.message || '错误');
       break;
     
-    case 'pong':
-      break;
+    case 'globalPresetUpdate':
+  // 管理员更新了预设，立即同步
+  globalPresetContent = msg.preset || '';
+  log('收到全局预设更新，长度: ' + globalPresetContent.length);
+  toast('info', '服务器预设已更新');
+  break;
+
+case 'serverFull':
+  // 服务器已满
+  toast('error', msg.message || '服务器已满，无法连接');
+  isConnected = false;
+  clearAllStorage();
+  resetAllState();
+  refreshPanel();
+  break;
+
+case 'pong':
+  break;
   }
 }
 
@@ -3107,7 +3165,6 @@ jQuery(async () => {
 // ========================================
 // 调试命令导出
 // ========================================
-
 window.mpDebug = {
   state: function() {
     console.log('===== 联机状态 =====');
@@ -3123,11 +3180,18 @@ window.mpDebug = {
     console.log('保护器数量:', RemoteMessageGuard.protected.size);
     console.log('正在生成:', isGenerating);
     console.log('房间边界索引:', roomJoinMessageIndex);
+    console.log('全局预设长度:', globalPresetContent.length);
     console.log('最后发送的背景:', lastSentBackground);
     console.log('最后发送的用户消息:', lastSentUserMessage);
     console.log('====================');
   },
   
+  showGlobalPreset: function() {
+    console.log('===== 全局预设 =====');
+    console.log('长度:', globalPresetContent.length);
+    console.log('内容:', globalPresetContent || '(空)');
+    console.log('====================');
+  },  
   connect: connectServer,
   disconnect: normalDisconnect,
   openPanel: openPanel,
@@ -3416,22 +3480,3 @@ log('  mpDebug.clearRemoteCache() - 清除远程上下文');
 log('  mpDebug.showSentData() - 显示已发送的数据');
 
 log('========================================');
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
