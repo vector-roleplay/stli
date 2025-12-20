@@ -572,6 +572,9 @@ function resetAllState() {
   lastActivatedWorldInfo = [];
   lastSentBackground = null;
   lastSentUserMessage = null;
+  pendingWorldInfoBefore = '';
+  pendingWorldInfoAfter = '';
+  pendingCharacterCard = null;
   isGenerating = false;
   turnState = {
     currentSpeaker: null,
@@ -1485,15 +1488,15 @@ function setupEventListeners() {
     log('世界书已激活，条目数: ' + lastActivatedWorldInfo.length);
   });
   
-  // ========== 第9.5步：提取 + 注入 ==========
+  // ========== 第9.5步：提取世界书/角色卡 + 注入远程背景 ==========
 eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, function(eventData) {
   if (!currentRoom) return;
   
   log('事件: CHAT_COMPLETION_PROMPT_READY, dryRun=' + eventData.dryRun);
   
-  // 1. 如果是我的回合且正在生成，提取并发送背景（仅在非 dryRun 时）
+  // 1. 如果是我的回合且正在生成，只提取世界书和角色卡（缓存起来，等AI回复后再发送）
   if (!eventData.dryRun && turnState.isMyTurn && isGenerating) {
-    extractAndSendBackground();
+    extractWorldInfoAndCharCard();
   }
   
   // 2. 如果有远程背景缓存，注入到 messages（dryRun 时也要注入，这样提示词查看器能看到）
@@ -1525,29 +1528,35 @@ eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, function(eventData) {
   });
   
   // ========== 生成结束 ==========
-  eventSource.on(event_types.GENERATION_ENDED, function(messageCount) {
-    if (!currentRoom) return;
-    if (!turnState.isMyTurn || !isGenerating) return;
-    
-    log('事件: 生成结束');
-    
-    const chat = getChat();
-    const messageId = chat.length - 1;
-    
-    if (messageId < roomJoinMessageIndex) {
-      isGenerating = false;
-      return;
-    }
-    
-    const lastMsg = chat[messageId];
-    
-    if (!lastMsg || lastMsg.is_user || lastMsg.extra?.isRemote) {
-      isGenerating = false;
-      return;
-    }
-    
-    waitForTavernHelperThenCapture(messageId, lastMsg);
-  });
+eventSource.on(event_types.GENERATION_ENDED, function(messageCount) {
+  if (!currentRoom) return;
+  if (!turnState.isMyTurn || !isGenerating) return;
+  
+  log('事件: 生成结束');
+  
+  const chat = getChat();
+  const messageId = chat.length - 1;
+  
+  if (messageId < roomJoinMessageIndex) {
+    isGenerating = false;
+    return;
+  }
+  
+  const lastMsg = chat[messageId];
+  
+  if (!lastMsg || lastMsg.is_user || lastMsg.extra?.isRemote) {
+    isGenerating = false;
+    return;
+  }
+  
+  // 先等 mes 存储完成，再提取聊天记录并发送背景
+  setTimeout(function() {
+    // 提取聊天记录（包含最新AI消息），结合缓存的世界书和角色卡，发送完整背景
+    extractChatHistoryAndSendBackground();
+  }, 100);
+  
+  waitForTavernHelperThenCapture(messageId, lastMsg);
+});
   
   eventSource.on(event_types.GENERATION_STOPPED, function() {
     log('事件: 生成停止');
@@ -3407,6 +3416,7 @@ log('  mpDebug.clearRemoteCache() - 清除远程上下文');
 log('  mpDebug.showSentData() - 显示已发送的数据');
 
 log('========================================');
+
 
 
 
