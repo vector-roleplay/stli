@@ -8,7 +8,7 @@
 //   - 同步内容查看面板
 // ========================================
 
-import { eventSource, event_types, getRequestHeaders } from '../../../../script.js';
+import { eventSource, event_types, getRequestHeaders, getCharacters, selectCharacterById, characters } from '../../../../script.js';
 import { extension_settings, getContext } from '../../../extensions.js';
 import { getRegexedString, regex_placement } from '../../regex/engine.js';
 
@@ -4313,3 +4313,4 @@ log('  mpDebug.showSentData() - 显示已发送的数据');
 
 
 log('========================================');
+
