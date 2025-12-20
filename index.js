@@ -93,6 +93,13 @@ let lastSentUserMessage = null;
 // ========== 服务器全局预设 ==========
 let globalPresetContent = '';
 
+// ========== 唯一世界模式 ==========
+let isUniqueWorldMode = false;
+let uniqueWorldHostId = null;
+let uniqueWorldHostName = null;
+let uniqueWorldCardAvatar = null;
+let uniqueWorldPendingConfirm = false;
+
 // 临时缓存（等待AI回复后再发送）
 let pendingWorldInfoBefore = '';
 let pendingWorldInfoAfter = '';
@@ -580,6 +587,11 @@ function resetAllState() {
   pendingCharacterCard = null;
   globalPresetContent = '';
   isGenerating = false;
+  isUniqueWorldMode = false;
+uniqueWorldHostId = null;
+uniqueWorldHostName = null;
+uniqueWorldCardAvatar = null;
+uniqueWorldPendingConfirm = false;
   turnState = {
     currentSpeaker: null,
     speakerName: null,
@@ -1386,6 +1398,607 @@ function injectGlobalPreset(eventData) {
   eventData.chat.unshift(presetMessage);
   
   log('已注入全局预设到数据包最前面，长度: ' + globalPresetContent.length);
+}
+
+// ========================================
+// 唯一世界模式函数
+// ========================================
+
+function initiateUniqueWorld() {
+  if (!currentRoom) {
+    toast('warning', '请先加入房间');
+    return;
+  }
+  
+  if (isUniqueWorldMode) {
+    toast('warning', '已经处于唯一世界模式');
+    return;
+  }
+  
+  showConfirmPopup(
+    '发起唯一世界模式',
+    '所有人将使用你的角色卡进行联机。确定发起吗？',
+    function() {
+      sendWS({ type: 'initiateUniqueWorld' });
+      toast('info', '已发起唯一世界请求，等待其他玩家确认...');
+    }
+  );
+}
+
+function showUniqueWorldRequestPopup(hostId, hostName, confirmed, totalUsers) {
+  closeUniqueWorldPopup();
+  uniqueWorldPendingConfirm = true;
+  
+  const isHost = hostId === odId;
+  
+  const overlay = $('<div id="mp-unique-world-popup"></div>');
+  overlay.css({
+    'position': 'fixed',
+    'top': '0',
+    'left': '0',
+    'width': '100%',
+    'height': '100%',
+    'background': 'rgba(0,0,0,0.85)',
+    'z-index': '2147483647',
+    'display': 'flex',
+    'align-items': 'center',
+    'justify-content': 'center',
+    'padding': '20px',
+    'box-sizing': 'border-box'
+  });
+  
+  let confirmedHtml = '';
+  confirmed.forEach(function(item) {
+    const isMe = item.id === odId;
+    confirmedHtml += '<div class="mp-uw-confirm-item confirmed">';
+    confirmedHtml += '<span class="mp-uw-confirm-icon">✅</span>';
+    confirmedHtml += '<span class="mp-uw-confirm-name">' + escapeHtml(item.name) + (isMe ? ' (你)' : '') + '</span>';
+    confirmedHtml += '</div>';
+  });
+  
+  // 未确认的用户
+  const confirmedIds = new Set(confirmed.map(c => c.id));
+  roomUsers.forEach(function(u) {
+    if (!confirmedIds.has(u.id)) {
+      const isMe = u.id === odId;
+      confirmedHtml += '<div class="mp-uw-confirm-item pending">';
+      confirmedHtml += '<span class="mp-uw-confirm-icon">⏳</span>';
+      confirmedHtml += '<span class="mp-uw-confirm-name">' + escapeHtml(u.name) + (isMe ? ' (你)' : '') + '</span>';
+      confirmedHtml += '</div>';
+    }
+  });
+  
+  const panelHtml = `
+    <div class="mp-uw-panel">
+      <div class="mp-uw-header">
+        <span class="mp-uw-icon">🌐</span>
+        <span class="mp-uw-title">唯一世界模式</span>
+      </div>
+      <div class="mp-uw-body">
+        <div class="mp-uw-desc">
+          <strong>${escapeHtml(hostName)}</strong> ${isHost ? '(你) ' : ''}发起了唯一世界模式
+        </div>
+        <div class="mp-uw-info">
+          所有人将使用相同的角色卡进行联机，角色卡将由房主同步。
+        </div>
+        <div class="mp-uw-progress">
+          <div class="mp-uw-progress-title">确认进度 (${confirmed.length}/${totalUsers})</div>
+          <div class="mp-uw-confirm-list">
+            ${confirmedHtml}
+          </div>
+        </div>
+      </div>
+      <div class="mp-uw-footer">
+        ${isHost ? 
+          '<div class="mp-uw-waiting">等待其他玩家确认...</div>' :
+          `<button class="mp-uw-btn mp-uw-btn-cancel" id="mp-uw-reject">拒绝</button>
+           <button class="mp-uw-btn mp-uw-btn-confirm" id="mp-uw-confirm">确认加入</button>`
+        }
+      </div>
+    </div>
+  `;
+  
+  overlay.html(panelHtml);
+  $('body').append(overlay);
+  
+  // 添加样式
+  if (!$('#mp-unique-world-styles').length) {
+    const styles = `
+      <style id="mp-unique-world-styles">
+        .mp-uw-panel {
+          background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+          border-radius: 20px;
+          width: 380px;
+          max-width: 95%;
+          box-shadow: 0 20px 60px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.1);
+          overflow: hidden;
+        }
+        .mp-uw-header {
+          background: linear-gradient(135deg, #6366f1, #8b5cf6);
+          padding: 20px;
+          text-align: center;
+        }
+        .mp-uw-icon {
+          font-size: 32px;
+          display: block;
+          margin-bottom: 8px;
+        }
+        .mp-uw-title {
+          color: #fff;
+          font-size: 20px;
+          font-weight: bold;
+        }
+        .mp-uw-body {
+          padding: 20px;
+        }
+        .mp-uw-desc {
+          color: #fff;
+          font-size: 15px;
+          text-align: center;
+          margin-bottom: 12px;
+        }
+        .mp-uw-info {
+          color: #888;
+          font-size: 13px;
+          text-align: center;
+          margin-bottom: 20px;
+          line-height: 1.5;
+        }
+        .mp-uw-progress {
+          background: rgba(0,0,0,0.3);
+          border-radius: 12px;
+          padding: 15px;
+        }
+        .mp-uw-progress-title {
+          color: #4ade80;
+          font-size: 13px;
+          font-weight: bold;
+          margin-bottom: 12px;
+        }
+        .mp-uw-confirm-list {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+        .mp-uw-confirm-item {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 10px 12px;
+          background: rgba(255,255,255,0.05);
+          border-radius: 8px;
+        }
+        .mp-uw-confirm-item.confirmed {
+          border-left: 3px solid #4ade80;
+        }
+        .mp-uw-confirm-item.pending {
+          border-left: 3px solid #f59e0b;
+          opacity: 0.7;
+        }
+        .mp-uw-confirm-icon {
+          font-size: 16px;
+        }
+        .mp-uw-confirm-name {
+          color: #ddd;
+          font-size: 14px;
+        }
+        .mp-uw-footer {
+          padding: 20px;
+          display: flex;
+          gap: 12px;
+          border-top: 1px solid rgba(255,255,255,0.1);
+        }
+        .mp-uw-waiting {
+          color: #888;
+          font-size: 14px;
+          text-align: center;
+          width: 100%;
+          padding: 10px;
+        }
+        .mp-uw-btn {
+          flex: 1;
+          padding: 14px;
+          border: none;
+          border-radius: 10px;
+          font-size: 15px;
+          font-weight: bold;
+          cursor: pointer;
+          transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .mp-uw-btn:hover {
+          transform: translateY(-2px);
+        }
+        .mp-uw-btn-cancel {
+          background: #333;
+          color: #fff;
+        }
+        .mp-uw-btn-confirm {
+          background: linear-gradient(135deg, #4ade80, #22c55e);
+          color: #000;
+        }
+      </style>
+    `;
+    $('head').append(styles);
+  }
+  
+  // 绑定事件
+  $('#mp-uw-reject').on('click', function() {
+    sendWS({ type: 'uniqueWorldReject' });
+    closeUniqueWorldPopup();
+    toast('info', '已拒绝唯一世界模式');
+  });
+  
+  $('#mp-uw-confirm').on('click', function() {
+    sendWS({ type: 'uniqueWorldConfirm' });
+    // 不关闭弹窗，等待全员确认
+    $(this).prop('disabled', true).text('已确认').css('opacity', '0.6');
+  });
+}
+
+function updateUniqueWorldProgress(confirmed, totalUsers) {
+  const popup = $('#mp-unique-world-popup');
+  if (!popup.length) return;
+  
+  // 更新进度标题
+  popup.find('.mp-uw-progress-title').text('确认进度 (' + confirmed.length + '/' + totalUsers + ')');
+  
+  // 重建确认列表
+  const confirmedIds = new Set(confirmed.map(c => c.id));
+  let confirmedHtml = '';
+  
+  confirmed.forEach(function(item) {
+    const isMe = item.id === odId;
+    confirmedHtml += '<div class="mp-uw-confirm-item confirmed">';
+    confirmedHtml += '<span class="mp-uw-confirm-icon">✅</span>';
+    confirmedHtml += '<span class="mp-uw-confirm-name">' + escapeHtml(item.name) + (isMe ? ' (你)' : '') + '</span>';
+    confirmedHtml += '</div>';
+  });
+  
+  roomUsers.forEach(function(u) {
+    if (!confirmedIds.has(u.id)) {
+      const isMe = u.id === odId;
+      confirmedHtml += '<div class="mp-uw-confirm-item pending">';
+      confirmedHtml += '<span class="mp-uw-confirm-icon">⏳</span>';
+      confirmedHtml += '<span class="mp-uw-confirm-name">' + escapeHtml(u.name) + (isMe ? ' (你)' : '') + '</span>';
+      confirmedHtml += '</div>';
+    }
+  });
+  
+  popup.find('.mp-uw-confirm-list').html(confirmedHtml);
+}
+
+function closeUniqueWorldPopup() {
+  $('#mp-unique-world-popup').remove();
+  uniqueWorldPendingConfirm = false;
+}
+
+async function handleUniqueWorldActivated(hostId, hostName) {
+  closeUniqueWorldPopup();
+  
+  isUniqueWorldMode = true;
+  uniqueWorldHostId = hostId;
+  uniqueWorldHostName = hostName;
+  
+  toast('success', '唯一世界模式已激活！');
+  log('🌐 唯一世界模式激活，房主: ' + hostName);
+  
+  refreshPanel();
+  
+  // 如果我是房主，开始同步角色卡
+  if (hostId === odId) {
+    log('🌐 我是房主，开始打包角色卡...');
+    await packAndSyncCharacterCard();
+  }
+}
+
+async function packAndSyncCharacterCard() {
+  const ctx = getContext();
+  const chid = ctx.characterId;
+  const character = ctx.characters[chid];
+  
+  if (!character) {
+    toast('error', '无法获取角色卡数据');
+    return;
+  }
+  
+  log('🌐 打包角色卡: ' + character.name);
+  
+  // 获取头像 Base64
+  let avatarBase64 = '';
+  try {
+    const avatarUrl = `/characters/${encodeURIComponent(character.avatar)}`;
+    const response = await fetch(avatarUrl);
+    const blob = await response.blob();
+    avatarBase64 = await new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result);
+      reader.readAsDataURL(blob);
+    });
+    log('🌐 头像已转换，大小: ' + Math.round(avatarBase64.length / 1024) + 'KB');
+  } catch (e) {
+    log('🌐 头像转换失败: ' + e);
+  }
+  
+  // 打包角色卡数据
+  const cardData = {
+    // 基础信息
+    name: character.name,
+    avatar: character.avatar,
+    avatarBase64: avatarBase64,
+    
+    // V1 字段
+    description: character.description || '',
+    personality: character.personality || '',
+    scenario: character.scenario || '',
+    first_mes: character.first_mes || '',
+    mes_example: character.mes_example || '',
+    
+    // V2 字段
+    data: character.data ? {
+      name: character.data.name,
+      description: character.data.description,
+      personality: character.data.personality,
+      scenario: character.data.scenario,
+      first_mes: character.data.first_mes,
+      mes_example: character.data.mes_example,
+      creator_notes: character.data.creator_notes,
+      system_prompt: character.data.system_prompt,
+      post_history_instructions: character.data.post_history_instructions,
+      tags: character.data.tags,
+      creator: character.data.creator,
+      character_version: character.data.character_version,
+      alternate_greetings: character.data.alternate_greetings,
+      // 内置世界书
+      character_book: character.data.character_book,
+      // 扩展信息（含正则、深度提示等）
+      extensions: character.data.extensions
+    } : null,
+    
+    // 房间信息
+    roomId: currentRoom
+  };
+  
+  log('🌐 角色卡打包完成，发送中...');
+  
+  sendWS({
+    type: 'syncCharacterCard',
+    cardData: cardData
+  });
+}
+
+async function handleRemoteCharacterCard(cardData, hostId, hostName, roomId) {
+  log('🌐 收到角色卡数据: ' + cardData.name);
+  
+  toast('info', '正在创建联机角色卡...');
+  
+  try {
+
+    // 生成新的角色卡名称和 avatar
+    const newName = '[联机] ' + cardData.name;
+    const newAvatar = 'MP_' + cardData.name.replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '_') + '_' + roomId + '.png';
+    
+    log('🌐 新角色卡名: ' + newName);
+    log('🌐 新avatar: ' + newAvatar);
+    
+    // 保存联机角色卡的 avatar 用于识别
+    uniqueWorldCardAvatar = newAvatar;
+    
+    // 构建角色卡数据
+    const characterData = {
+      name: newName,
+      description: cardData.description || '',
+      personality: cardData.personality || '',
+      scenario: cardData.scenario || '',
+      first_mes: cardData.first_mes || '',
+      mes_example: cardData.mes_example || '',
+      creatorcomment: '联机角色卡 - 房间: ' + roomId + ' - 房主: ' + hostName,
+      tags: ['联机', '唯一世界'],
+      talkativeness: '0.5',
+      fav: false,
+      
+      // V2 数据
+      data: cardData.data ? {
+        ...cardData.data,
+        name: newName,
+        creator_notes: '联机角色卡\n房间: ' + roomId + '\n房主: ' + hostName + '\n原角色: ' + cardData.name
+      } : null
+    };
+    
+    // 将 Base64 头像转为 Blob
+    let avatarBlob = null;
+    if (cardData.avatarBase64) {
+      try {
+        const base64Data = cardData.avatarBase64.split(',')[1];
+        const byteCharacters = atob(base64Data);
+        const byteNumbers = new Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        const byteArray = new Uint8Array(byteNumbers);
+        avatarBlob = new Blob([byteArray], { type: 'image/png' });
+        log('🌐 头像Blob创建成功，大小: ' + Math.round(avatarBlob.size / 1024) + 'KB');
+      } catch (e) {
+        log('🌐 头像转换失败: ' + e);
+      }
+    }
+    
+    // 创建 FormData
+    const formData = new FormData();
+    
+    if (avatarBlob) {
+      formData.append('avatar', avatarBlob, newAvatar);
+    }
+    
+    formData.append('json_data', JSON.stringify(characterData));
+    
+    // 调用 API 创建角色卡
+    const response = await fetch('/api/characters/create', {
+      method: 'POST',
+      body: formData
+    });
+    
+    if (!response.ok) {
+      throw new Error('创建角色卡失败: ' + response.status);
+    }
+    
+    const result = await response.json();
+    log('🌐 角色卡创建成功: ' + JSON.stringify(result));
+    
+    // 刷新角色列表
+    const ctx = getContext();
+    if (ctx.getCharacters) {
+      await ctx.getCharacters();
+    }
+    
+    // 查找新创建的角色卡
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    const characters = ctx.characters;
+    let newCharId = -1;
+    
+    for (let i = 0; i < characters.length; i++) {
+      if (characters[i].name === newName || 
+          characters[i].avatar === newAvatar ||
+          characters[i].avatar.includes('MP_' + cardData.name.replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '_'))) {
+        newCharId = i;
+        break;
+      }
+    }
+    
+    if (newCharId === -1) {
+      // 尝试用最新的角色卡
+      newCharId = characters.length - 1;
+      log('🌐 未找到匹配的角色卡，使用最新的: ' + newCharId);
+    }
+    
+    log('🌐 找到角色卡，索引: ' + newCharId);
+    
+    // 切换到新角色卡
+    if (ctx.selectCharacterById) {
+      await ctx.selectCharacterById(newCharId);
+    } else {
+      // 备用方案：模拟点击
+      const charElement = $(`.character_select[chid="${newCharId}"]`);
+      if (charElement.length) {
+        charElement.trigger('click');
+      }
+    }
+    
+    // 更新房间边界
+    await new Promise(resolve => setTimeout(resolve, 300));
+    roomJoinMessageIndex = getChat().length;
+    
+    toast('success', '联机角色卡已创建并切换！');
+    log('🌐 角色卡切换完成');
+    
+    // 通知服务器准备就绪
+    sendWS({ type: 'uniqueWorldReady' });
+    
+    refreshPanel();
+    
+  } catch (e) {
+    log('🌐 创建角色卡失败: ' + e);
+    toast('error', '创建联机角色卡失败: ' + e.message);
+  }
+}
+
+function handleUniqueWorldCancelled(reason) {
+  closeUniqueWorldPopup();
+  
+  isUniqueWorldMode = false;
+  uniqueWorldHostId = null;
+  uniqueWorldHostName = null;
+  
+  toast('warning', reason || '唯一世界模式已取消');
+  refreshPanel();
+}
+
+function handleUniqueWorldExited(reason) {
+  isUniqueWorldMode = false;
+  uniqueWorldHostId = null;
+  uniqueWorldHostName = null;
+  uniqueWorldCardAvatar = null;
+  
+  toast('info', reason || '已退出唯一世界模式');
+  log('🌐 退出唯一世界模式');
+  
+  refreshPanel();
+}
+
+function exitUniqueWorld() {
+  if (!isUniqueWorldMode) return;
+  
+  showConfirmPopup(
+    '退出唯一世界模式',
+    '确定要退出唯一世界模式吗？所有人将恢复到普通联机模式。',
+    function() {
+      sendWS({ type: 'exitUniqueWorld' });
+    }
+  );
+}
+
+// 唯一世界模式下的聊天历史同步
+function handleRemoteChatHistoryOnly(msg) {
+  const { senderId, senderName, chatHistory, timestamp } = msg;
+  
+  // 更新远程上下文缓存（只有聊天历史）
+  remoteContextCache.set(senderId, {
+    senderName: senderName,
+    background: {
+      worldInfoBefore: '',
+      worldInfoAfter: '',
+      description: '',
+      personality: '',
+      scenario: '',
+      persona: '',
+      chatHistory: chatHistory
+    },
+    timestamp: timestamp
+  });
+  
+  log('🌐 [唯一世界] 收到聊天历史，来自: ' + senderName + ', 条数: ' + chatHistory.length);
+}
+
+// 唯一世界模式下发送聊天历史
+function extractAndSendChatHistoryOnly() {
+  const ctx = getContext();
+  const chat = getChat();
+  const chatHistory = [];
+  const chatLength = chat.length;
+  
+  chat.forEach((msg, index) => {
+    if (msg.is_system) return;
+    if (msg.extra?.isRemote) return;
+    if (msg.mes === '[远程消息]' || msg.mes === '[远端消息]') return;
+    
+    const regexType = msg.is_user 
+      ? regex_placement.USER_INPUT 
+      : regex_placement.AI_OUTPUT;
+    
+    const depth = chatLength - index - 1;
+    
+    const cleanedContent = getRegexedString(msg.mes, regexType, {
+      isPrompt: true,
+      depth: depth
+    });
+    
+    chatHistory.push({
+      role: msg.is_user ? 'user' : 'assistant',
+      name: msg.name || (msg.is_user ? ctx.name1 : ctx.name2),
+      content: cleanedContent,
+      index: index
+    });
+  });
+  
+  sendWS({
+    type: 'syncChatHistoryOnly',
+    chatHistory: chatHistory,
+    senderName: userName,
+    senderId: odId,
+    timestamp: Date.now()
+  });
+  
+  log('🌐 [唯一世界] 已发送聊天历史，条数: ' + chatHistory.length);
 }
 // ========================================
 // 恢复远程消息（刷新后）
@@ -3480,3 +4093,4 @@ log('  mpDebug.clearRemoteCache() - 清除远程上下文');
 log('  mpDebug.showSentData() - 显示已发送的数据');
 
 log('========================================');
+
