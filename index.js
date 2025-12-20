@@ -2128,19 +2128,31 @@ function setupEventListeners() {
 eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, function(eventData) {
   if (!currentRoom) return;
   
-  log('事件: CHAT_COMPLETION_PROMPT_READY, dryRun=' + eventData.dryRun);
+  log('事件: CHAT_COMPLETION_PROMPT_READY, dryRun=' + eventData.dryRun + ', 唯一世界=' + isUniqueWorldMode);
   
-  // 1. 如果是我的回合且正在生成，只提取世界书和角色卡（缓存起来，等AI回复后再发送）
+  // 1. 提取数据（区分模式）
   if (!eventData.dryRun && turnState.isMyTurn && isGenerating) {
-    extractWorldInfoAndCharCard();
+    if (isUniqueWorldMode) {
+      // 唯一世界模式：不提取世界书和角色卡，只标记需要提取聊天历史
+      log('🌐 [唯一世界] 跳过世界书/角色卡提取');
+    } else {
+      // 多世界模式：提取世界书和角色卡
+      extractWorldInfoAndCharCard();
+    }
   }
   
   // 2. 如果有远程背景缓存，注入到 messages
   if (remoteContextCache.size > 0) {
-    injectRemoteBackground(eventData);
+    if (isUniqueWorldMode) {
+      // 唯一世界模式：只注入聊天历史
+      injectRemoteBackgroundChatOnly(eventData);
+    } else {
+      // 多世界模式：注入完整背景
+      injectRemoteBackground(eventData);
+    }
   }
   
-  // 3. 注入服务器全局预设（最高优先级，插入到最前面）
+  // 3. 注入服务器全局预设（两种模式都需要）
   if (globalPresetContent && globalPresetContent.trim()) {
     injectGlobalPreset(eventData);
   }
@@ -4093,4 +4105,5 @@ log('  mpDebug.clearRemoteCache() - 清除远程上下文');
 log('  mpDebug.showSentData() - 显示已发送的数据');
 
 log('========================================');
+
 
