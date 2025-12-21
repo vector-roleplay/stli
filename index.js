@@ -8,11 +8,8 @@
 //   - 同步内容查看面板
 // ========================================
 
-import { eventSource, event_types, getRequestHeaders, getCharacters, selectCharacterById, characters, reloadCurrentChat } from '../../../../script.js';
-import { importEmbeddedWorldInfo } from '../../../world-info.js';
-import { allowScopedScripts } from '../../regex/engine.js';
-import { extension_settings, getContext } from '../../../extensions.js';
-import { getRegexedString, regex_placement } from '../../regex/engine.js';
+let importEmbeddedWorldInfo = null;
+let allowScopedScripts = null;
 
 // ========== accountStorage 访问辅助函数 ==========
 function getAccountStorage() {
@@ -1996,25 +1993,37 @@ async function handleRemoteCharacterCard(cardData, hostId, hostName, roomId) {
       
       const newCharacter = charactersList[newCharIndex];
       
-      // 静默导入世界书
-      if (newCharacter?.data?.character_book) {
-        try {
-          await importEmbeddedWorldInfo(true);
-          log('🌐 世界书已静默导入');
-        } catch (e) {
-          log('🌐 世界书导入失败: ' + e);
-        }
-      }
-      
-      // 静默允许正则脚本
-      if (newCharacter?.data?.extensions?.regex_scripts) {
-        try {
-          allowScopedScripts(newCharacter);
-          log('🌐 正则脚本已静默允许');
-        } catch (e) {
-          log('🌐 正则脚本允许失败: ' + e);
-        }
-      }
+      // 静默导入世界书（动态加载模块）
+if (newCharacter?.data?.character_book) {
+  try {
+    if (!importEmbeddedWorldInfo) {
+      const worldInfoModule = await import('../../../world-info.js');
+      importEmbeddedWorldInfo = worldInfoModule.importEmbeddedWorldInfo;
+    }
+    if (importEmbeddedWorldInfo) {
+      await importEmbeddedWorldInfo(true);
+      log('🌐 世界书已静默导入');
+    }
+  } catch (e) {
+    log('🌐 世界书导入失败（可能不支持）: ' + e);
+  }
+}
+
+// 静默允许正则脚本（动态加载模块）
+if (newCharacter?.data?.extensions?.regex_scripts) {
+  try {
+    if (!allowScopedScripts) {
+      const regexModule = await import('../../regex/engine.js');
+      allowScopedScripts = regexModule.allowScopedScripts;
+    }
+    if (allowScopedScripts) {
+      allowScopedScripts(newCharacter);
+      log('🌐 正则脚本已静默允许');
+    }
+  } catch (e) {
+    log('🌐 正则脚本允许失败（可能不支持）: ' + e);
+  }
+}
       
     } else {
       log('🌐 ⚠️ 未找到新创建的角色卡');
@@ -4359,4 +4368,5 @@ log('  mpDebug.showSentData() - 显示已发送的数据');
 
 
 log('========================================');
+
 
