@@ -1,3 +1,7 @@
+import { eventSource, event_types, getRequestHeaders, getCharacters, selectCharacterById, characters } from '../../../../script.js';
+import { extension_settings, getContext } from '../../../extensions.js';
+import { getRegexedString, regex_placement } from '../../regex/engine.js';
+
 // ========================================
 // 酒馆联机扩展 v3.2.0
 // 服务器: wss://chu.zeabur.app
@@ -4368,5 +4372,6 @@ log('  mpDebug.showSentData() - 显示已发送的数据');
 
 
 log('========================================');
+
 
 
