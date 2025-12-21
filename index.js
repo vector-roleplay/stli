@@ -8,9 +8,27 @@
 //   - 同步内容查看面板
 // ========================================
 
-import { eventSource, event_types, getRequestHeaders, getCharacters, selectCharacterById, characters } from '../../../../script.js';
+import { eventSource, event_types, getRequestHeaders, getCharacters, selectCharacterById, characters, reloadCurrentChat } from '../../../../script.js';
+import { importEmbeddedWorldInfo } from '../../../world-info.js';
+import { allowScopedScripts } from '../../regex/engine.js';
 import { extension_settings, getContext } from '../../../extensions.js';
 import { getRegexedString, regex_placement } from '../../regex/engine.js';
+
+// ========== accountStorage 访问辅助函数 ==========
+function getAccountStorage() {
+  // 尝试多种方式获取 accountStorage
+  if (typeof accountStorage !== 'undefined') {
+    return accountStorage;
+  }
+  if (window.accountStorage) {
+    return window.accountStorage;
+  }
+  // 降级方案：使用 localStorage
+  return {
+    getItem: (key) => localStorage.getItem(key),
+    setItem: (key, value) => localStorage.setItem(key, value)
+  };
+}
 
 // ========== 扩展配置 ==========
 const extensionName = 'stli';
@@ -1960,16 +1978,169 @@ async function handleRemoteCharacterCard(cardData, hostId, hostName, roomId) {
         await selectCharacterById(newCharIndex);
         log('🌐 已切换到新角色 (全局 selectCharacterById)');
       } else if (ctx.selectCharacterById) {
+async function handleRemoteCharacterCard(cardData, hostId, hostName, roomId) {
+  log('🌐 收到角色卡数据: ' + cardData.name);
+  
+  toast('info', '正在创建联机角色卡...');
+  
+  try {
+    // 生成新的角色卡名称
+    const newName = '[联机] ' + cardData.name;
+    
+    log('🌐 新角色卡名: ' + newName);
+    
+    // ========== 构建 FormData ==========
+    const formData = new FormData();
+    
+    // 【必填】角色名
+    formData.append('ch_name', newName);
+    
+    // 【核心字段】
+    formData.append('description', cardData.description || '');
+    formData.append('personality', cardData.personality || '');
+    formData.append('scenario', cardData.scenario || '');
+    formData.append('first_mes', cardData.first_mes || '');
+    formData.append('mes_example', cardData.mes_example || '');
+    
+    // 【元数据字段】
+    const creatorNotes = '联机角色卡\n房间: ' + roomId + '\n房主: ' + hostName + '\n原角色: ' + cardData.name;
+    formData.append('creator_notes', cardData.data?.creator_notes || creatorNotes);
+    formData.append('system_prompt', cardData.data?.system_prompt || '');
+    formData.append('post_history_instructions', cardData.data?.post_history_instructions || '');
+    formData.append('tags', '联机, 唯一世界');
+    formData.append('creator', cardData.data?.creator || hostName);
+    formData.append('character_version', cardData.data?.character_version || '');
+    formData.append('talkativeness', '0.5');
+    formData.append('fav', 'false');
+    
+    // 【深度提示词】
+    const depthPrompt = cardData.data?.extensions?.depth_prompt;
+    formData.append('depth_prompt_prompt', depthPrompt?.prompt || '');
+    formData.append('depth_prompt_depth', String(depthPrompt?.depth || 4));
+    formData.append('depth_prompt_role', depthPrompt?.role || 'system');
+    
+    // 【替代开场白】
+    const altGreetings = cardData.data?.alternate_greetings || [];
+    if (Array.isArray(altGreetings)) {
+      altGreetings.forEach(greeting => {
+        formData.append('alternate_greetings', greeting);
+      });
+    }
+    
+    // 【扩展数据】- 包含世界书和正则
+    const extensions = cardData.data?.extensions || {};
+    formData.append('extensions', JSON.stringify(extensions));
+    
+    // 【世界书】
+    if (cardData.data?.extensions?.world) {
+      formData.append('world', cardData.data.extensions.world);
+    }
+    
+    // 【头像文件】
+    if (cardData.avatarBase64) {
+      try {
+        const base64Data = cardData.avatarBase64.split(',')[1];
+        const byteCharacters = atob(base64Data);
+        const byteNumbers = new Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        const byteArray = new Uint8Array(byteNumbers);
+        const avatarBlob = new Blob([byteArray], { type: 'image/png' });
+        formData.append('avatar', avatarBlob, 'avatar.png');
+        log('🌐 头像已添加，大小: ' + Math.round(avatarBlob.size / 1024) + 'KB');
+      } catch (e) {
+        log('🌐 头像转换失败: ' + e);
+      }
+    }
+    
+    // ========== 发送请求 ==========
+    log('🌐 发送创建角色卡请求...');
+    
+    const response = await fetch('/api/characters/create', {
+      method: 'POST',
+      headers: getRequestHeaders({ omitContentType: true }),
+      body: formData,
+      cache: 'no-cache'
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error('HTTP ' + response.status + ': ' + errorText);
+    }
+    
+    // 获取返回的头像文件名
+    const avatarFileName = await response.text();
+    log('🌐 角色卡创建成功，avatar: ' + avatarFileName);
+    
+    // 保存联机角色卡的 avatar 用于识别
+    uniqueWorldCardAvatar = avatarFileName;
+    
+    // ========== 预设"已提醒"标记，跳过确认弹窗 ==========
+    const storage = getAccountStorage();
+    storage.setItem('AlertWI_' + avatarFileName, 'true');
+    storage.setItem('AlertRegex_' + avatarFileName, 'true');
+    log('🌐 已设置跳过确认标记');
+    
+    // ========== 刷新角色列表 ==========
+    const ctx = getContext();
+    
+    if (typeof getCharacters === 'function') {
+      await getCharacters();
+      log('🌐 角色列表已刷新 (全局 getCharacters)');
+    } else if (ctx.getCharacters) {
+      await ctx.getCharacters();
+      log('🌐 角色列表已刷新 (ctx.getCharacters)');
+    }
+    
+    await new Promise(resolve => setTimeout(resolve, 300));
+    
+    // ========== 切换到新角色 ==========
+    const charactersList = ctx.characters || [];
+    const newCharIndex = charactersList.findIndex(c => c.avatar === avatarFileName);
+    
+    log('🌐 搜索角色卡，avatar: ' + avatarFileName + ', 找到索引: ' + newCharIndex);
+    
+    if (newCharIndex !== -1) {
+      if (typeof selectCharacterById === 'function') {
+        await selectCharacterById(newCharIndex);
+        log('🌐 已切换到新角色 (全局 selectCharacterById)');
+      } else if (ctx.selectCharacterById) {
         await ctx.selectCharacterById(newCharIndex);
         log('🌐 已切换到新角色 (ctx.selectCharacterById)');
       } else {
-        // 方法2：模拟点击
         const charElement = document.querySelector('.character_select[chid="' + newCharIndex + '"]');
         if (charElement) {
           charElement.click();
           log('🌐 已切换到新角色 (点击)');
         }
       }
+      
+      // ========== 静默导入世界书和正则 ==========
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      const newCharacter = charactersList[newCharIndex];
+      
+      // 静默导入世界书
+      if (newCharacter?.data?.character_book) {
+        try {
+          await importEmbeddedWorldInfo(true);
+          log('🌐 世界书已静默导入');
+        } catch (e) {
+          log('🌐 世界书导入失败: ' + e);
+        }
+      }
+      
+      // 静默允许正则脚本
+      if (newCharacter?.data?.extensions?.regex_scripts) {
+        try {
+          allowScopedScripts(newCharacter);
+          log('🌐 正则脚本已静默允许');
+        } catch (e) {
+          log('🌐 正则脚本允许失败: ' + e);
+        }
+      }
+      
     } else {
       log('🌐 ⚠️ 未找到新创建的角色卡');
       toast('warning', '请手动选择联机角色卡: ' + newName);
@@ -4313,4 +4484,5 @@ log('  mpDebug.showSentData() - 显示已发送的数据');
 
 
 log('========================================');
+
 
